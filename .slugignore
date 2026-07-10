@@ -1,0 +1,6 @@
+mods/
+*.jar
+.git/
+.vscode/
+*.md
+extract.py

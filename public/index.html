@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Create AutoCraft | ME System</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="ae2-container">
+    <!-- Header -->
+    <div class="ae2-header">
+      <div class="ae2-title">
+        <span class="ae2-icon">⚙</span>
+        <span>ME Terminal - Create AutoCraft</span>
+      </div>
+      <div class="ae2-stats">
+        <span id="item-count">0 items</span>
+        <span class="separator">|</span>
+        <span id="recipe-count">0 recipes</span>
+      </div>
+    </div>
+
+    <!-- Search bar -->
+    <div class="ae2-search">
+      <input 
+        type="text" 
+        id="search-input" 
+        placeholder="Search items... (e.g. brass, gear, ingot)"
+        autocomplete="off"
+      >
+      <select id="namespace-filter">
+        <option value="">All Mods</option>
+        <option value="create">Create</option>
+        <option value="createaddition">Create: Addition</option>
+        <option value="createbigcannons">Create: Big Cannons</option>
+        <option value="createdeco">Create: Deco</option>
+        <option value="tfmg">TFMG</option>
+        <option value="farmersdelight">Farmer's Delight</option>
+        <option value="minecraft">Minecraft</option>
+      </select>
+    </div>
+
+    <!-- Main content -->
+    <div class="ae2-main">
+      <!-- Items grid -->
+      <div class="ae2-items-panel">
+        <div class="ae2-panel-title">Items Storage</div>
+        <div class="ae2-items-grid" id="items-grid">
+          <div class="ae2-loading">Loading items...</div>
+        </div>
+      </div>
+
+      <!-- Recipe details -->
+      <div class="ae2-recipe-panel">
+        <div class="ae2-panel-title">Recipe Details</div>
+        <div class="ae2-recipe-content" id="recipe-details">
+          <div class="ae2-empty-state">
+            <div class="ae2-empty-icon">📦</div>
+            <p>Select an item to view crafting recipes</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="ae2-footer">
+      <div class="ae2-footer-info">
+        <span>✨ Powered by Create Mod</span>
+        <span class="separator">|</span>
+        <span id="server-status">🟢 Connected</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

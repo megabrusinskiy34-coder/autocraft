@@ -1,0 +1,342 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   AE2-Inspired Dark Theme for Create AutoCraft
+   ══════════════════════════════════════════════════════════════════════════ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  /* AE2 Color Palette */
+  --ae2-bg-dark: #1a1a1f;
+  --ae2-bg-panel: #25252b;
+  --ae2-bg-item: #2d2d35;
+  --ae2-bg-hover: #3a3a45;
+  --ae2-border: #404047;
+  --ae2-accent: #4a9eff;
+  --ae2-accent-glow: rgba(74, 158, 255, 0.3);
+  --ae2-text: #e0e0e8;
+  --ae2-text-dim: #9090a0;
+  --ae2-success: #4ade80;
+  --ae2-warning: #fbbf24;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: var(--ae2-bg-dark);
+  color: var(--ae2-text);
+  overflow: hidden;
+}
+
+.ae2-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 1920px;
+  margin: 0 auto;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+.ae2-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background: var(--ae2-bg-panel);
+  border-bottom: 2px solid var(--ae2-border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.ae2-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ae2-accent);
+}
+
+.ae2-icon {
+  font-size: 24px;
+  animation: spin 4s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.ae2-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--ae2-text-dim);
+}
+
+.separator {
+  color: var(--ae2-border);
+}
+
+/* ── Search Bar ────────────────────────────────────────────────────────── */
+.ae2-search {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px;
+  background: var(--ae2-bg-panel);
+  border-bottom: 1px solid var(--ae2-border);
+}
+
+#search-input {
+  flex: 1;
+  padding: 12px 16px;
+  background: var(--ae2-bg-item);
+  border: 1px solid var(--ae2-border);
+  border-radius: 6px;
+  color: var(--ae2-text);
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+#search-input:focus {
+  outline: none;
+  border-color: var(--ae2-accent);
+  box-shadow: 0 0 0 3px var(--ae2-accent-glow);
+}
+
+#namespace-filter {
+  padding: 12px 16px;
+  background: var(--ae2-bg-item);
+  border: 1px solid var(--ae2-border);
+  border-radius: 6px;
+  color: var(--ae2-text);
+  font-size: 14px;
+  cursor: pointer;
+  min-width: 200px;
+}
+
+/* ── Main Content ──────────────────────────────────────────────────────── */
+.ae2-main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  gap: 1px;
+  background: var(--ae2-border);
+}
+
+.ae2-items-panel {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
+  background: var(--ae2-bg-panel);
+  overflow: hidden;
+}
+
+.ae2-recipe-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--ae2-bg-panel);
+  overflow: hidden;
+}
+
+.ae2-panel-title {
+  padding: 12px 16px;
+  background: var(--ae2-bg-item);
+  border-bottom: 1px solid var(--ae2-border);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ae2-text-dim);
+}
+
+/* ── Items Grid ────────────────────────────────────────────────────────── */
+.ae2-items-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 4px;
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--ae2-bg-dark);
+}
+
+.ae2-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 8px;
+  background: var(--ae2-bg-item);
+  border: 1px solid var(--ae2-border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.ae2-item:hover {
+  background: var(--ae2-bg-hover);
+  border-color: var(--ae2-accent);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px var(--ae2-accent-glow);
+}
+
+.ae2-item.selected {
+  background: var(--ae2-bg-hover);
+  border-color: var(--ae2-accent);
+  box-shadow: 0 0 0 2px var(--ae2-accent-glow);
+}
+
+.ae2-item-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
+.ae2-item-icon.missing {
+  background: var(--ae2-bg-dark);
+  border: 1px dashed var(--ae2-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  opacity: 0.5;
+}
+
+.ae2-item-name {
+  font-size: 11px;
+  color: var(--ae2-text-dim);
+  line-height: 1.3;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+/* ── Recipe Details ────────────────────────────────────────────────────── */
+.ae2-recipe-content {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  background: var(--ae2-bg-dark);
+}
+
+.ae2-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--ae2-text-dim);
+}
+
+.ae2-empty-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  opacity: 0.3;
+}
+
+.ae2-recipe-card {
+  background: var(--ae2-bg-item);
+  border: 1px solid var(--ae2-border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.ae2-recipe-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ae2-border);
+}
+
+.ae2-recipe-type {
+  display: inline-block;
+  padding: 4px 12px;
+  background: var(--ae2-accent);
+  color: white;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.ae2-recipe-id {
+  font-size: 11px;
+  color: var(--ae2-text-dim);
+  font-family: 'Courier New', monospace;
+}
+
+.ae2-recipe-data {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ae2-text);
+  background: var(--ae2-bg-dark);
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Loading/Error States ──────────────────────────────────────────────── */
+.ae2-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--ae2-text-dim);
+  font-size: 14px;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+.ae2-footer {
+  padding: 12px 24px;
+  background: var(--ae2-bg-panel);
+  border-top: 1px solid var(--ae2-border);
+  font-size: 12px;
+  color: var(--ae2-text-dim);
+}
+
+.ae2-footer-info {
+  display: flex;
+  gap: 12px;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--ae2-bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ae2-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ae2-bg-hover);
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .ae2-main {
+    flex-direction: column;
+  }
+  
+  .ae2-items-panel, .ae2-recipe-panel {
+    flex: 1;
+  }
+}
