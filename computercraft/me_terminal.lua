@@ -273,14 +273,56 @@ function findItemInStorage(itemId)
         if storage.peripheral and storage.peripheral.list then
             for slot, item in pairs(storage.peripheral.list()) do
                 if isTag then
-                    -- For tags, try common conversions
+                    -- For tags, convert to most common item format
                     -- c:ingots/iron -> minecraft:iron_ingot or create:iron_ingot
                     local simplifiedTag = tagName:gsub("^c:", ""):gsub("^forge:", "")
+                    
+                    -- Extract base name (e.g., "iron" from "ingots/iron")
                     local baseName = simplifiedTag:match("([^/]+)$") or simplifiedTag
                     
-                    -- Check if item name contains the base tag name
-                    if item.name:find(baseName) then
-                        return storage.name, slot, item.count
+                    -- Build expected item patterns
+                    -- For c:ingots/gold -> look for gold_ingot (not gold_wire, gold_block, etc)
+                    local patterns = {}
+                    
+                    if simplifiedTag:match("^ingots/") then
+                        -- ingots/iron -> iron_ingot
+                        table.insert(patterns, baseName .. "_ingot")
+                    elseif simplifiedTag:match("^plates/") or simplifiedTag:match("^sheets/") then
+                        -- plates/iron -> iron_plate or iron_sheet
+                        table.insert(patterns, baseName .. "_plate")
+                        table.insert(patterns, baseName .. "_sheet")
+                    elseif simplifiedTag:match("^nuggets/") then
+                        -- nuggets/iron -> iron_nugget
+                        table.insert(patterns, baseName .. "_nugget")
+                    elseif simplifiedTag:match("^dusts/") then
+                        -- dusts/iron -> iron_dust
+                        table.insert(patterns, baseName .. "_dust")
+                    elseif simplifiedTag:match("^gears/") then
+                        -- gears/iron -> iron_gear
+                        table.insert(patterns, baseName .. "_gear")
+                    elseif simplifiedTag:match("^rods/") then
+                        -- rods/iron -> iron_rod
+                        table.insert(patterns, baseName .. "_rod")
+                    else
+                        -- Fallback: just look for baseName_something
+                        table.insert(patterns, baseName)
+                    end
+                    
+                    -- Check if item matches any pattern
+                    for _, pattern in ipairs(patterns) do
+                        if item.name:find(pattern) then
+                            -- Extra validation: make sure it's not something else
+                            -- e.g., gold_ingot is ok, but gold_wire is not
+                            local itemBaseName = item.name:match(":(.+)") or item.name
+                            
+                            -- Check it matches the pattern closely
+                            if itemBaseName == pattern or 
+                               itemBaseName == "minecraft:" .. pattern or
+                               itemBaseName == "create:" .. pattern or
+                               itemBaseName:match(pattern .. "$") then
+                                return storage.name, slot, item.count
+                            end
+                        end
                     end
                 else
                     -- Direct item ID match
@@ -669,6 +711,8 @@ function executeCraft(job)
         if item.itemId:sub(1, 1) == "#" then
             print("    This is a TAG: " .. item.itemId:sub(2))
             print("    Searching for items matching this tag...")
+        else
+            print("    Looking for exact item: " .. item.itemId)
         end
         
         print("    Searching in storage...")
@@ -719,6 +763,15 @@ function executeCraft(job)
         print("    ✓ Found in: " .. storageName)
         print("    Slot: " .. slot)
         print("    Available: " .. count .. "x")
+        
+        -- Get actual item details
+        local storage = peripheral.wrap(storageName)
+        if storage then
+            local itemDetails = storage.getItemDetail(slot)
+            if itemDetails then
+                print("    ACTUAL ITEM: " .. itemDetails.name .. " x" .. itemDetails.count)
+            end
+        end
         
         -- Transfer item
         print("    Attempting transfer...")
@@ -796,8 +849,10 @@ function executeCraft(job)
                             local buffer = peripheral.wrap(bufferName)
                             local bufferShortName = bufferName:match("([^:]+)$") or bufferName
                             
-                            -- Step 1: Storage -> Buffer
+                            -- Step 1: Storage -> Buffer (try both push and pull)
                             print("      Step 1: " .. storageName .. " -> " .. bufferName)
+                            
+                            -- Try: storage pushes to buffer
                             success, result = pcall(function()
                                 return storage.pushItems(bufferShortName, slot, 1)
                             end)
@@ -807,6 +862,28 @@ function executeCraft(job)
                                 success, result = pcall(function()
                                     return storage.pushItems(bufferName, slot, 1)
                                 end)
+                            end
+                            
+                            -- If push failed, try: buffer pulls from storage
+                            if not success or not result or result == 0 then
+                                print("      Push failed, trying pull...")
+                                
+                                -- WORKING METHOD: Use short names without prefix
+                                local storageSimpleName = storageName:match("item_vault_%d+") or 
+                                                         storageName:match("chest_%d+") or
+                                                         storageShortName
+                                
+                                print("      Trying: buffer.pullItems('" .. storageSimpleName .. "', " .. slot .. ", 1)")
+                                success, result = pcall(function()
+                                    return buffer.pullItems(storageSimpleName, slot, 1)
+                                end)
+                                
+                                if not success or not result or result == 0 then
+                                    print("      Failed, trying full name...")
+                                    success, result = pcall(function()
+                                        return buffer.pullItems(storageName, slot, 1)
+                                    end)
+                                end
                             end
                             
                             if success and result and result > 0 then
@@ -822,23 +899,39 @@ function executeCraft(job)
                                 end
                                 
                                 if bufferSlot then
-                                    -- Step 2: Buffer -> Depot
+                                    -- Step 2: Buffer -> Depot (try both push and pull)
                                     print("      Step 2: " .. bufferName .. " -> " .. depotName)
+                                    
+                                    -- Try: buffer pushes to depot
                                     success, result = pcall(function()
                                         return buffer.pushItems(depotShortName, bufferSlot, 1)
                                     end)
                                     
                                     if not success or not result or result == 0 then
                                         success, result = pcall(function()
+                                            return buffer.pushItems(depotName, bufferSlot, 1)
+                                        end)
+                                    end
+                                    
+                                    -- If push failed, try: depot pulls from buffer
+                                    if not success or not result or result == 0 then
+                                        print("      Push failed, trying pull...")
+                                        success, result = pcall(function()
                                             return depot.pullItems(bufferShortName, bufferSlot, 1)
                                         end)
+                                        
+                                        if not success or not result or result == 0 then
+                                            success, result = pcall(function()
+                                                return depot.pullItems(bufferName, bufferSlot, 1)
+                                            end)
+                                        end
                                     end
                                     
                                     if success and result and result > 0 then
                                         moved = result
                                         print("      ✓ Moved to depot: " .. result)
                                     else
-                                        print("      ✗ Failed to move from buffer to depot")
+                                        print("      ✗ Failed: " .. tostring(result))
                                         return false, "Buffer->Depot transfer failed"
                                     end
                                 else
@@ -846,7 +939,7 @@ function executeCraft(job)
                                     return false, "Item lost in buffer"
                                 end
                             else
-                                print("      ✗ Failed to move to buffer")
+                                print("      ✗ Failed: " .. tostring(result))
                                 return false, "Storage->Buffer transfer failed"
                             end
                         else
@@ -911,12 +1004,49 @@ function executeCraft(job)
         
         if outputCount > 0 then
             print("  ✓ Output detected!")
+            
+            -- Find vault to return items to
+            local returnVault = nil
+            local returnVaultName = nil
+            for _, name in ipairs(peripheral.getNames()) do
+                if name:match("item_vault") then
+                    returnVaultName = name
+                    returnVault = peripheral.wrap(name)
+                    break
+                end
+            end
+            
             for slot, item in pairs(outputItems) do
                 print("    - Slot " .. slot .. ": " .. item.name .. " x" .. item.count)
                 
                 -- Check if this is the item we wanted to craft
                 if item.name == job.itemId then
                     print("      ✓✓✓ THIS IS THE CRAFTED ITEM!")
+                end
+                
+                -- Try to return to vault
+                if returnVault and returnVaultName then
+                    print("      Returning to vault...")
+                    
+                    local vaultShortName = returnVaultName:match("item_vault_%d+") or returnVaultName:match("([^:]+)$")
+                    
+                    -- Try: vault pulls from depot
+                    local success, moved = pcall(function()
+                        return returnVault.pullItems(outputName:match("([^:]+)$") or outputName, slot, item.count)
+                    end)
+                    
+                    if not success or not moved or moved == 0 then
+                        -- Try: depot pushes to vault  
+                        success, moved = pcall(function()
+                            return output.pushItems(vaultShortName, slot, item.count)
+                        end)
+                    end
+                    
+                    if success and moved and moved > 0 then
+                        print("      ✓ Returned " .. moved .. " to vault")
+                    else
+                        print("      ⚠ Could not return to vault (manual pickup needed)")
+                    end
                 end
             end
         else
