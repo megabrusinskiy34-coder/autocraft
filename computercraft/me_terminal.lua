@@ -283,59 +283,61 @@ function findItemInStorage(itemId)
     local isTag = itemId:sub(1, 1) == "#"
     local tagName = isTag and itemId:sub(2) or nil
     
+    -- Collect all matching items with priority
+    local matches = {}
+    
     for _, storage in ipairs(findAllStorage()) do
         if storage.peripheral and storage.peripheral.list then
             for slot, item in pairs(storage.peripheral.list()) do
                 if isTag then
                     -- For tags, convert to most common item format
-                    -- c:ingots/iron -> minecraft:iron_ingot or create:iron_ingot
                     local simplifiedTag = tagName:gsub("^c:", ""):gsub("^forge:", "")
-                    
-                    -- Extract base name (e.g., "iron" from "ingots/iron")
                     local baseName = simplifiedTag:match("([^/]+)$") or simplifiedTag
                     
                     -- Build expected item patterns
-                    -- For c:ingots/gold -> look for gold_ingot (not gold_wire, gold_block, etc)
                     local patterns = {}
                     
                     if simplifiedTag:match("^ingots/") then
-                        -- ingots/iron -> iron_ingot
-                        table.insert(patterns, baseName .. "_ingot")
+                        patterns = {baseName .. "_ingot"}
                     elseif simplifiedTag:match("^plates/") or simplifiedTag:match("^sheets/") then
-                        -- plates/iron -> iron_plate or iron_sheet
-                        table.insert(patterns, baseName .. "_plate")
-                        table.insert(patterns, baseName .. "_sheet")
+                        patterns = {baseName .. "_plate", baseName .. "_sheet"}
                     elseif simplifiedTag:match("^nuggets/") then
-                        -- nuggets/iron -> iron_nugget
-                        table.insert(patterns, baseName .. "_nugget")
+                        patterns = {baseName .. "_nugget"}
                     elseif simplifiedTag:match("^dusts/") then
-                        -- dusts/iron -> iron_dust
-                        table.insert(patterns, baseName .. "_dust")
+                        patterns = {baseName .. "_dust"}
                     elseif simplifiedTag:match("^gears/") then
-                        -- gears/iron -> iron_gear
-                        table.insert(patterns, baseName .. "_gear")
+                        patterns = {baseName .. "_gear"}
                     elseif simplifiedTag:match("^rods/") then
-                        -- rods/iron -> iron_rod
-                        table.insert(patterns, baseName .. "_rod")
+                        patterns = {baseName .. "_rod"}
                     else
-                        -- Fallback: just look for baseName_something
-                        table.insert(patterns, baseName)
+                        patterns = {baseName}
                     end
                     
                     -- Check if item matches any pattern
                     for _, pattern in ipairs(patterns) do
-                        if item.name:find(pattern) then
-                            -- Extra validation: make sure it's not something else
-                            -- e.g., gold_ingot is ok, but gold_wire is not
-                            local itemBaseName = item.name:match(":(.+)") or item.name
+                        local itemBaseName = item.name:match(":(.+)") or item.name
+                        
+                        if itemBaseName == pattern or 
+                           itemBaseName:match(pattern .. "$") then
                             
-                            -- Check it matches the pattern closely
-                            if itemBaseName == pattern or 
-                               itemBaseName == "minecraft:" .. pattern or
-                               itemBaseName == "create:" .. pattern or
-                               itemBaseName:match(pattern .. "$") then
-                                return storage.name, slot, item.count
+                            -- Calculate priority (lower = better)
+                            local priority = 999
+                            if item.name:match("^minecraft:") then
+                                priority = 1  -- Vanilla minecraft - HIGHEST priority
+                            elseif item.name:match("^create:") then
+                                priority = 2  -- Create mod
+                            else
+                                priority = 10  -- Other mods - LOWEST priority
                             end
+                            
+                            table.insert(matches, {
+                                storage = storage.name,
+                                slot = slot,
+                                count = item.count,
+                                itemName = item.name,
+                                priority = priority
+                            })
+                            break
                         end
                     end
                 else
@@ -347,6 +349,18 @@ function findItemInStorage(itemId)
             end
         end
     end
+    
+    -- If tag search, return best match by priority
+    if isTag and #matches > 0 then
+        -- Sort by priority (lowest first)
+        table.sort(matches, function(a, b)
+            return a.priority < b.priority
+        end)
+        
+        local best = matches[1]
+        return best.storage, best.slot, best.count
+    end
+    
     return nil
 end
 
@@ -1043,24 +1057,83 @@ function executeCraft(job)
                     print("      Returning to vault...")
                     
                     local vaultShortName = returnVaultName:match("item_vault_%d+") or returnVaultName:match("([^:]+)$")
+                    local depotShortName = outputName:match("depot_%d+") or outputName:match("([^:]+)$")
                     
-                    -- Try: vault pulls from depot
+                    -- METHOD 1: Try direct transfer (vault pulls from depot)
                     local success, moved = pcall(function()
-                        return returnVault.pullItems(outputName:match("([^:]+)$") or outputName, slot, item.count)
+                        return returnVault.pullItems(depotShortName, slot, item.count)
                     end)
                     
                     if not success or not moved or moved == 0 then
-                        -- Try: depot pushes to vault  
+                        -- Try: depot pushes to vault
                         success, moved = pcall(function()
                             return output.pushItems(vaultShortName, slot, item.count)
                         end)
                     end
                     
-                    if success and moved and moved > 0 then
-                        print("      ✓ Returned " .. moved .. " to vault")
+                    -- METHOD 2: If direct failed, use buffer chest
+                    if not success or not moved or moved == 0 then
+                        print("      Direct transfer failed, using buffer...")
+                        
+                        -- Find buffer chest
+                        local bufferName = nil
+                        local buffer = nil
+                        for _, name in ipairs(peripheral.getNames()) do
+                            local ptype = peripheral.getType(name)
+                            if ptype == "minecraft:chest" or (name:match("chest") and not name:match("vault")) then
+                                bufferName = name
+                                buffer = peripheral.wrap(name)
+                                break
+                            end
+                        end
+                        
+                        if buffer and bufferName then
+                            local bufferShortName = bufferName:match("chest_%d+") or bufferName:match("([^:]+)$")
+                            
+                            -- Step 1: Depot -> Buffer (buffer pulls from depot)
+                            success, moved = pcall(function()
+                                return buffer.pullItems(depotShortName, slot, item.count)
+                            end)
+                            
+                            if success and moved and moved > 0 then
+                                print("      ✓ Moved to buffer: " .. moved)
+                                
+                                -- Find item in buffer
+                                local bufferSlot = nil
+                                for s, i in pairs(buffer.list()) do
+                                    if i.name == item.name then
+                                        bufferSlot = s
+                                        break
+                                    end
+                                end
+                                
+                                if bufferSlot then
+                                    -- Step 2: Buffer -> Vault (vault pulls from buffer)
+                                    success, moved = pcall(function()
+                                        return returnVault.pullItems(bufferShortName, bufferSlot, item.count)
+                                    end)
+                                    
+                                    if success and moved and moved > 0 then
+                                        print("      ✓ Returned " .. moved .. " to vault")
+                                    else
+                                        print("      ⚠ Could not move from buffer to vault")
+                                    end
+                                else
+                                    print("      ⚠ Item not found in buffer")
+                                end
+                            else
+                                print("      ⚠ Could not move to buffer")
+                            end
+                        else
+                            print("      ⚠ No buffer chest found")
+                        end
                     else
-                        print("      ⚠ Could not return to vault (manual pickup needed)")
+                        if success and moved and moved > 0 then
+                            print("      ✓ Returned " .. moved .. " to vault")
+                        end
                     end
+                else
+                    print("      ⚠ No vault found for return")
                 end
             end
         else
