@@ -182,6 +182,8 @@ app.get('/api/stats', (req, res) => {
 // POST /api/inventory - receive inventory from ComputerCraft ME terminal
 let liveInventory = null;
 let lastInventoryUpdate = null;
+let craftingQueue = [];
+let queueIdCounter = 1;
 
 app.post('/api/inventory', (req, res) => {
   try {
@@ -229,6 +231,95 @@ app.get('/api/inventory', (req, res) => {
   });
 });
 
+// POST /api/craft - request crafting from web interface
+app.post('/api/craft', (req, res) => {
+  try {
+    const { itemId, amount } = req.body;
+    
+    if (!itemId || !amount) {
+      return res.status(400).json({ success: false, message: 'Missing itemId or amount' });
+    }
+    
+    // Create craft job
+    const job = {
+      id: queueIdCounter++,
+      itemId: itemId,
+      amount: amount,
+      status: 'pending', // pending, crafting, completed, failed
+      createdAt: Date.now()
+    };
+    
+    craftingQueue.push(job);
+    
+    console.log(`[CRAFT] New job #${job.id}: ${amount}x ${itemId}`);
+    
+    res.json({ success: true, jobId: job.id, message: 'Craft job queued' });
+  } catch (error) {
+    console.error('Error in /api/craft:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// GET /api/queue - get crafting queue
+app.get('/api/queue', (req, res) => {
+  res.json({
+    queue: craftingQueue,
+    total: craftingQueue.length
+  });
+});
+
+// GET /api/queue/next - get next pending job (for ComputerCraft)
+app.get('/api/queue/next', (req, res) => {
+  const nextJob = craftingQueue.find(job => job.status === 'pending');
+  
+  if (nextJob) {
+    nextJob.status = 'crafting';
+    nextJob.startedAt = Date.now();
+    res.json({ job: nextJob });
+  } else {
+    res.json({ job: null });
+  }
+});
+
+// POST /api/queue/:id/complete - mark job as completed
+app.post('/api/queue/:id/complete', (req, res) => {
+  const jobId = parseInt(req.params.id);
+  const job = craftingQueue.find(j => j.id === jobId);
+  
+  if (job) {
+    job.status = 'completed';
+    job.completedAt = Date.now();
+    console.log(`[CRAFT] Job #${jobId} completed`);
+    
+    // Remove completed jobs after 5 seconds
+    setTimeout(() => {
+      const index = craftingQueue.findIndex(j => j.id === jobId);
+      if (index !== -1) craftingQueue.splice(index, 1);
+    }, 5000);
+    
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ success: false, message: 'Job not found' });
+  }
+});
+
+// POST /api/queue/:id/fail - mark job as failed
+app.post('/api/queue/:id/fail', (req, res) => {
+  const jobId = parseInt(req.params.id);
+  const job = craftingQueue.find(j => j.id === jobId);
+  
+  if (job) {
+    job.status = 'failed';
+    job.failedAt = Date.now();
+    job.error = req.body.error || 'Unknown error';
+    console.log(`[CRAFT] Job #${jobId} failed: ${job.error}`);
+    
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ success: false, message: 'Job not found' });
+  }
+});
+
 // ── Start server ──────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n🚀 Create AutoCraft API running on http://localhost:${PORT}`);
@@ -238,5 +329,9 @@ app.listen(PORT, () => {
   console.log(`   GET  /api/search?q=gear`);
   console.log(`   GET  /api/stats`);
   console.log(`   GET  /api/inventory (live from ComputerCraft)`);
-  console.log(`   POST /api/inventory (from me_terminal.lua)\n`);
+  console.log(`   POST /api/inventory (from me_terminal.lua)`);
+  console.log(`   POST /api/craft (request crafting)`);
+  console.log(`   GET  /api/queue (get crafting queue)`);
+  console.log(`   GET  /api/queue/next (for ComputerCraft autocrafter)`);
+  console.log(`\n🌐 ME Terminal: http://localhost:${PORT}/me.html\n`);
 });

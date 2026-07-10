@@ -229,6 +229,7 @@ function main()
     
     local lastUpdate = "Never"
     local lastSuccess = false
+    local updateCounter = 0
     
     while true do
         drawHeader()
@@ -246,8 +247,64 @@ function main()
         drawStats(stats, lastUpdate, success)
         drawTopItems(inventory)
         
+        -- Check for craft jobs every 10 updates (20 seconds)
+        updateCounter = updateCounter + 1
+        if updateCounter >= 10 then
+            updateCounter = 0
+            checkCraftQueue()
+        end
+        
         -- Wait for next update
         sleep(UPDATE_INTERVAL)
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Craft Queue Handler
+-- ══════════════════════════════════════════════════════════════════════════
+
+function checkCraftQueue()
+    -- Check if there's a pending craft job
+    local success, response = pcall(function()
+        return http.get(API_URL .. "/api/queue/next", HTTP_HEADERS)
+    end)
+    
+    if not success or not response then
+        return
+    end
+    
+    local data = textutils.unserialiseJSON(response.readAll())
+    response.close()
+    
+    if data.job then
+        print("\n[CRAFT] Job #" .. data.job.id .. ": " .. data.job.amount .. "x " .. data.job.itemId)
+        processCraftJob(data.job)
+    end
+end
+
+function processCraftJob(job)
+    -- This is a simplified version
+    -- You need to integrate with autocrafter_advanced.lua logic here
+    
+    print("[CRAFT] Processing job #" .. job.id)
+    
+    -- TODO: Implement actual crafting logic
+    -- For now, just mark as completed after 5 seconds
+    sleep(5)
+    
+    -- Mark as completed
+    local success, response = pcall(function()
+        local jsonData = textutils.serialiseJSON({ success = true })
+        return http.post(
+            API_URL .. "/api/queue/" .. job.id .. "/complete",
+            jsonData,
+            HTTP_HEADERS
+        )
+    end)
+    
+    if success and response then
+        response.close()
+        print("[CRAFT] Job #" .. job.id .. " completed!")
     end
 end
 

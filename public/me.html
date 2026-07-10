@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ME Terminal - Create AutoCraft</title>
+    <link rel="stylesheet" href="me.css">
+</head>
+<body>
+    <div class="me-container">
+        <!-- Header -->
+        <div class="me-header">
+            <div class="me-title">
+                <span class="me-icon">⚡</span>
+                <h1>ME TERMINAL</h1>
+            </div>
+            <div class="me-status">
+                <div class="status-indicator" id="statusIndicator">
+                    <span class="status-dot"></span>
+                    <span id="statusText">OFFLINE</span>
+                </div>
+                <div class="me-stats">
+                    <span id="itemCount">0</span> items | 
+                    <span id="storageCount">0</span> storage units
+                </div>
+            </div>
+        </div>
+
+        <!-- Search Bar -->
+        <div class="me-search">
+            <input type="text" id="searchInput" placeholder="Search items..." autocomplete="off">
+            <div class="search-filters">
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="create">Create</button>
+                <button class="filter-btn" data-filter="minecraft">Minecraft</button>
+                <button class="filter-btn" data-filter="craftable">Craftable</button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="me-main">
+            <!-- Left: Item Grid -->
+            <div class="me-grid-container">
+                <div class="grid-header">
+                    <span>Storage Inventory</span>
+                    <span class="grid-count" id="gridCount">0 items</span>
+                </div>
+                <div class="me-item-grid" id="itemGrid">
+                    <!-- Items will be inserted here -->
+                </div>
+            </div>
+
+            <!-- Right: Details Panel -->
+            <div class="me-details-panel">
+                <div class="panel-header">Item Details</div>
+                <div class="panel-content" id="detailsContent">
+                    <div class="no-selection">
+                        <span class="icon">📦</span>
+                        <p>Select an item to view details</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Crafting Queue -->
+        <div class="crafting-queue">
+            <div class="queue-header">
+                <span>⚙️ Crafting Queue</span>
+                <span class="queue-count" id="queueCount">0 active</span>
+            </div>
+            <div class="queue-list" id="queueList">
+                <div class="queue-empty">No crafting jobs</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Craft Modal -->
+    <div class="modal" id="craftModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Craft Item</h2>
+                <button class="close-btn" onclick="closeCraftModal()">×</button>
+            </div>
+            <div class="modal-body" id="craftModalBody">
+                <!-- Content filled by JS -->
+            </div>
+        </div>
+    </div>
+
+    <script src="me.js"></script>
+</body>
+</html>
