@@ -240,6 +240,11 @@ body {
     image-rendering: crisp-edges;
 }
 
+.item-icon.missing {
+    font-size: 28px;
+    color: #606060;
+}
+
 .item-count {
     position: absolute;
     bottom: -5px;

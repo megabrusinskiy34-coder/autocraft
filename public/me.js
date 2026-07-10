@@ -71,15 +71,41 @@ async function loadInventory() {
         const data = await response.json();
         
         if (data.online) {
+            // Live inventory from ComputerCraft
             inventory = data.items || [];
             updateStatus(true, data);
             renderInventory();
         } else {
+            // Fallback: show all craftable items from recipes
+            console.log('CC offline, loading craftable items...');
+            await loadCraftableItemsAsInventory();
             updateStatus(false);
         }
     } catch (error) {
         console.error('Error loading inventory:', error);
+        // Fallback to craftable items
+        await loadCraftableItemsAsInventory();
         updateStatus(false);
+    }
+}
+
+async function loadCraftableItemsAsInventory() {
+    try {
+        const response = await fetch(`${API_URL}/api/items`);
+        const data = await response.json();
+        
+        // Convert craftable items to inventory format
+        inventory = data.items.map(item => ({
+            id: item.id,
+            name: item.name,
+            namespace: item.namespace,
+            count: 0, // Unknown count (not in storage)
+            locations: 0
+        }));
+        
+        renderInventory();
+    } catch (error) {
+        console.error('Error loading craftable items:', error);
     }
 }
 
@@ -174,25 +200,33 @@ function createItemCard(item) {
     const icon = document.createElement('div');
     icon.className = 'item-icon';
     
-    // Get texture from craftable items if available
+    // Get texture from craftable items
     const texture = craftableItems[item.id]?.texture;
     if (texture) {
         const img = document.createElement('img');
         img.src = `/textures/${texture}`;
-        img.onerror = () => { icon.textContent = '📦'; };
+        img.onerror = () => { 
+            icon.innerHTML = '📦';
+            icon.classList.add('missing');
+        };
         icon.appendChild(img);
     } else {
         icon.textContent = '📦';
+        icon.classList.add('missing');
     }
     
-    const count = document.createElement('div');
-    count.className = 'item-count';
-    count.textContent = formatCount(item.count);
-    icon.appendChild(count);
+    // Only show count badge if item is in storage (count > 0)
+    if (item.count > 0) {
+        const count = document.createElement('div');
+        count.className = 'item-count';
+        count.textContent = formatCount(item.count);
+        icon.appendChild(count);
+    }
     
     const name = document.createElement('div');
     name.className = 'item-name';
     name.textContent = item.name;
+    name.title = item.id; // Show full ID on hover
     
     card.appendChild(icon);
     card.appendChild(name);
@@ -212,6 +246,7 @@ function showItemDetails(item) {
     
     const texture = craftableItems[item.id]?.texture;
     const isCraftable = !!craftableItems[item.id];
+    const inStorage = item.count > 0;
     
     content.innerHTML = `
         <div class="item-details">
@@ -224,12 +259,14 @@ function showItemDetails(item) {
             <div class="detail-stats">
                 <div class="stat-row">
                     <span class="stat-label">In Storage:</span>
-                    <span class="stat-value">${item.count}</span>
+                    <span class="stat-value">${inStorage ? item.count : 'Not in storage'}</span>
                 </div>
+                ${inStorage ? `
                 <div class="stat-row">
                     <span class="stat-label">Locations:</span>
                     <span class="stat-value">${item.locations}</span>
                 </div>
+                ` : ''}
                 <div class="stat-row">
                     <span class="stat-label">Namespace:</span>
                     <span class="stat-value">${item.namespace}</span>
