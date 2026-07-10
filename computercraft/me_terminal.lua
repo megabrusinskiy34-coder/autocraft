@@ -19,20 +19,27 @@ local HTTP_HEADERS = {
 
 function findAllStorage()
     local devices = {}
+    local seen = {}  -- Track already added devices to avoid duplicates
+    
     for _, name in ipairs(peripheral.getNames()) do
-        local ptype = peripheral.getType(name)
-        
-        -- Find all storage: chests, vaults, depots, barrels
-        if ptype == "inventory" or 
-           ptype:find("chest") or 
-           ptype:find("vault") or 
-           ptype:find("depot") or
-           ptype:find("barrel") then
-            table.insert(devices, {
-                name = name,
-                type = ptype,
-                peripheral = peripheral.wrap(name)
-            })
+        -- Skip if already added
+        if not seen[name] then
+            local ptype = peripheral.getType(name)
+            
+            -- Find all storage BUT exclude depots (they are for crafting, not storage)
+            if (ptype == "inventory" or 
+               ptype:find("chest") or 
+               ptype:find("vault") or 
+               ptype:find("barrel")) and
+               not name:match("depot") then  -- EXCLUDE DEPOTS!
+                
+                table.insert(devices, {
+                    name = name,
+                    type = ptype,
+                    peripheral = peripheral.wrap(name)
+                })
+                seen[name] = true
+            end
         end
     end
     return devices
@@ -106,6 +113,13 @@ function sendInventoryToAPI(inventory, stats)
     table.sort(items, function(a, b)
         return a.count > b.count
     end)
+    
+    -- Debug: log coal count if exists
+    for _, item in ipairs(items) do
+        if item.id == "minecraft:coal" then
+            print("[DEBUG] Sending coal count: " .. item.count)
+        end
+    end
     
     -- Prepare payload
     local payload = {
