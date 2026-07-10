@@ -47,7 +47,12 @@ function scanDevices()
             })
             print("  [CRAFTER] " .. name)
         
-        -- Storage chests
+        -- Create Item Vaults (item_vault_5, item_vault_6, etc.)
+        elseif name:match("item_vault_%d+$") then
+            table.insert(devices.storage, {name = name, peripheral = peripheral.wrap(name)})
+            print("  [VAULT] " .. name)
+        
+        -- Storage chests (fallback)
         elseif ptype:find("chest") or ptype == "inventory" then
             table.insert(devices.storage, {name = name, peripheral = peripheral.wrap(name)})
             print("  [STORAGE] " .. name)
@@ -61,7 +66,7 @@ function scanDevices()
     print("  " .. #devices.depots .. " press depots")
     print("  " .. #devices.crafters .. " mechanical crafters")
     print("  " .. (devices.output_depot and "1" or "0") .. " output depot")
-    print("  " .. #devices.storage .. " storage chests")
+    print("  " .. #devices.storage .. " storage vaults/chests")
 end
 
 -- ══════════════════════════════════════════════════════════════════════════

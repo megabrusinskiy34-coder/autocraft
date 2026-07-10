@@ -1,23 +1,31 @@
-# Create AutoCraft
+# 🔧 Create AutoCraft
 
 Web-based ME System interface for Create mod autocrafting with ComputerCraft integration.
 
-## Features
+Полная система для автоматизации крафта в Minecraft Create через ComputerCraft и веб-интерфейс в стиле Applied Energistics.
 
-- 🎨 AE2-inspired dark UI
-- 🔍 Search & filter 5449 recipes from Create mods
-- 🖼️ 1297 item textures (inventory sprites)
-- 🌐 REST API for ComputerCraft HTTP integration
-- 🚀 Ready for Railway deployment
+## ✨ Features
 
-## Quick Start
+- 🎨 **AE2-inspired dark UI** - точная копия интерфейса ME System
+- 🔍 **5449 рецептов** из Create и всех аддонов
+- 🖼️ **1297 текстур предметов** (inventory sprites)
+- 🤖 **ComputerCraft интеграция** - полный контроль через Lua
+- 🌐 **REST API** для HTTP запросов из игры
+- 🚀 **Railway ready** - готов к деплою в один клик
+- ⚙️ **Mechanical Crafter support** - автоматическая раскладка по сетке 3x3
+- 📦 **Smart inventory** - автоматический поиск предметов в хранилищах
 
+## 🚀 Quick Start
+
+### Локально:
 ```bash
 npm install
 npm start
 ```
+Открой http://localhost:3000
 
-Open http://localhost:3000
+### Railway деплой:
+Смотри **[QUICK_START.md](QUICK_START.md)** для пошаговой инструкции
 
 ## API Endpoints
 

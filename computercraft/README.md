@@ -122,10 +122,11 @@ local DEPOT_SIDE = "bottom"  -- сторона где подключен depot
                                 +-- depot_1, depot_2, depot_3
                                 +-- mechanical_crafter_1..9
                                 +-- depot_4 (output)
-                                +-- Storage Chest 1
-                                +-- Storage Chest 2
-                                +-- Storage Chest N
+                                +-- item_vault_5, item_vault_6 (Create Item Vaults)
+                                +-- Storage Chest (опционально)
 ```
+
+**Важно:** Create Item Vaults автоматически определяются по паттерну `item_vault_X`
 
 ## API Примеры
 
