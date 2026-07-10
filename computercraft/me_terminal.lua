@@ -265,11 +265,28 @@ end
 
 -- Find item in storage and return storage peripheral + slot
 function findItemInStorage(itemId)
+    -- If itemId is a tag (starts with #), search for matching items
+    local isTag = itemId:sub(1, 1) == "#"
+    local tagName = isTag and itemId:sub(2) or nil
+    
     for _, storage in ipairs(findAllStorage()) do
         if storage.peripheral and storage.peripheral.list then
             for slot, item in pairs(storage.peripheral.list()) do
-                if item.name == itemId then
-                    return storage.name, slot, item.count
+                if isTag then
+                    -- For tags, try common conversions
+                    -- c:ingots/iron -> minecraft:iron_ingot or create:iron_ingot
+                    local simplifiedTag = tagName:gsub("^c:", ""):gsub("^forge:", "")
+                    local baseName = simplifiedTag:match("([^/]+)$") or simplifiedTag
+                    
+                    -- Check if item name contains the base tag name
+                    if item.name:find(baseName) then
+                        return storage.name, slot, item.count
+                    end
+                else
+                    -- Direct item ID match
+                    if item.name == itemId then
+                        return storage.name, slot, item.count
+                    end
                 end
             end
         end
@@ -371,16 +388,21 @@ function parseCreateSimpleRecipe(recipeData)
         return grid
     end
     
-    -- Extract item ID
+    -- Extract item ID or tag
     local itemId = nil
     if type(ingredient) == "string" then
         itemId = ingredient
     elseif ingredient.item then
         itemId = ingredient.item
     elseif ingredient.tag then
-        itemId = ingredient.tag
-    elseif ingredient[1] and ingredient[1].item then
-        itemId = ingredient[1].item
+        -- Tags need special handling - mark with # prefix
+        itemId = "#" .. ingredient.tag
+    elseif ingredient[1] then
+        if ingredient[1].item then
+            itemId = ingredient[1].item
+        elseif ingredient[1].tag then
+            itemId = "#" .. ingredient[1].tag
+        end
     end
     
     if itemId then
