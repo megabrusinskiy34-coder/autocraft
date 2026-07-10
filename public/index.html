@@ -1,78 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Create AutoCraft | ME System</title>
-  <link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create AutoCraft | Redirecting...</title>
+    <script>
+        // Redirect to new ME Terminal
+        window.location.href = '/me.html';
+    </script>
+    <style>
+        body {
+            background: #0a0e14;
+            color: #4a90e2;
+            font-family: sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .loading {
+            text-align: center;
+        }
+        .loading h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        .spinner {
+            border: 4px solid #2d3748;
+            border-top: 4px solid #4a90e2;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        a {
+            color: #4a90e2;
+            text-decoration: none;
+            margin-top: 20px;
+            display: block;
+        }
+    </style>
 </head>
 <body>
-  <div class="ae2-container">
-    <!-- Header -->
-    <div class="ae2-header">
-      <div class="ae2-title">
-        <span class="ae2-icon">⚙</span>
-        <span>ME Terminal - Create AutoCraft</span>
-      </div>
-      <div class="ae2-stats">
-        <span id="item-count">0 items</span>
-        <span class="separator">|</span>
-        <span id="recipe-count">0 recipes</span>
-      </div>
+    <div class="loading">
+        <h1>⚡ Redirecting to ME Terminal...</h1>
+        <div class="spinner"></div>
+        <p style="margin-top: 20px;">If not redirected, <a href="/me.html">click here</a></p>
     </div>
-
-    <!-- Search bar -->
-    <div class="ae2-search">
-      <input 
-        type="text" 
-        id="search-input" 
-        placeholder="Search items... (e.g. brass, gear, ingot)"
-        autocomplete="off"
-      >
-      <select id="namespace-filter">
-        <option value="">All Mods</option>
-        <option value="create">Create</option>
-        <option value="createaddition">Create: Addition</option>
-        <option value="createbigcannons">Create: Big Cannons</option>
-        <option value="createdeco">Create: Deco</option>
-        <option value="tfmg">TFMG</option>
-        <option value="farmersdelight">Farmer's Delight</option>
-        <option value="minecraft">Minecraft</option>
-      </select>
-    </div>
-
-    <!-- Main content -->
-    <div class="ae2-main">
-      <!-- Items grid -->
-      <div class="ae2-items-panel">
-        <div class="ae2-panel-title">Items Storage</div>
-        <div class="ae2-items-grid" id="items-grid">
-          <div class="ae2-loading">Loading items...</div>
-        </div>
-      </div>
-
-      <!-- Recipe details -->
-      <div class="ae2-recipe-panel">
-        <div class="ae2-panel-title">Recipe Details</div>
-        <div class="ae2-recipe-content" id="recipe-details">
-          <div class="ae2-empty-state">
-            <div class="ae2-empty-icon">📦</div>
-            <p>Select an item to view crafting recipes</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Footer -->
-    <div class="ae2-footer">
-      <div class="ae2-footer-info">
-        <span>✨ Powered by Create Mod</span>
-        <span class="separator">|</span>
-        <span id="server-status">🟢 Connected</span>
-      </div>
-    </div>
-  </div>
-
-  <script src="app.js"></script>
 </body>
 </html>
