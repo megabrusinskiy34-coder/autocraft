@@ -24,62 +24,72 @@ console.log(`Loaded ${Object.keys(itemTextures).length} item textures`);
 
 // GET /api/items - list all craftable items with textures
 app.get('/api/items', (req, res) => {
-  const search = req.query.search?.toLowerCase() || '';
-  const namespace = req.query.namespace || '';
-  
-  // Build list of items from recipes (output items)
-  const items = new Set();
-  const itemData = [];
+  try {
+    const search = req.query.search?.toLowerCase() || '';
+    const namespace = req.query.namespace || '';
+    
+    // Build list of items from recipes (output items)
+    const items = new Set();
+    const itemData = [];
 
-  for (const [recipeId, recipe] of Object.entries(recipesDB)) {
-    const data = recipe.data;
-    
-    // Extract result/output item
-    let resultItem = null;
-    
-    if (data.result) {
-      if (typeof data.result === 'string') {
-        resultItem = data.result;
-      } else if (data.result.item) {
-        resultItem = data.result.item;
-      } else if (data.result.id) {
-        resultItem = data.result.id;
-      }
-    } else if (data.results && Array.isArray(data.results) && data.results.length > 0) {
-      const first = data.results[0];
-      if (typeof first === 'string') {
-        resultItem = first;
-      } else if (first.item) {
-        resultItem = first.item;
-      } else if (first.id) {
-        resultItem = first.id;
+    for (const [recipeId, recipe] of Object.entries(recipesDB)) {
+      try {
+        const data = recipe.data;
+        
+        // Extract result/output item
+        let resultItem = null;
+        
+        if (data.result) {
+          if (typeof data.result === 'string') {
+            resultItem = data.result;
+          } else if (data.result.item) {
+            resultItem = data.result.item;
+          } else if (data.result.id) {
+            resultItem = data.result.id;
+          }
+        } else if (data.results && Array.isArray(data.results) && data.results.length > 0) {
+          const first = data.results[0];
+          if (typeof first === 'string') {
+            resultItem = first;
+          } else if (first.item) {
+            resultItem = first.item;
+          } else if (first.id) {
+            resultItem = first.id;
+          }
+        }
+
+        if (resultItem && !items.has(resultItem)) {
+          items.add(resultItem);
+          
+          const itemNs = resultItem.split(':')[0] || 'minecraft';
+          const itemName = resultItem.split(':')[1] || resultItem;
+          
+          // Filter
+          if (namespace && itemNs !== namespace) continue;
+          if (search && !resultItem.toLowerCase().includes(search)) continue;
+
+          itemData.push({
+            id: resultItem,
+            name: itemName.replace(/_/g, ' '),
+            namespace: itemNs,
+            texture: itemTextures[resultItem] || null,
+            recipeTypes: [recipe.type],
+          });
+        }
+      } catch (err) {
+        // Skip invalid recipe
+        console.error(`Error processing recipe ${recipeId}:`, err.message);
       }
     }
 
-    if (resultItem && !items.has(resultItem)) {
-      items.add(resultItem);
-      
-      const itemNs = resultItem.split(':')[0];
-      const itemName = resultItem.split(':')[1] || resultItem;
-      
-      // Filter
-      if (namespace && itemNs !== namespace) continue;
-      if (search && !resultItem.toLowerCase().includes(search)) continue;
-
-      itemData.push({
-        id: resultItem,
-        name: itemName.replace(/_/g, ' '),
-        namespace: itemNs,
-        texture: itemTextures[resultItem] || null,
-        recipeTypes: [recipe.type],
-      });
-    }
+    res.json({
+      total: itemData.length,
+      items: itemData.slice(0, 500), // limit for performance
+    });
+  } catch (error) {
+    console.error('Error in /api/items:', error);
+    res.status(500).json({ error: 'Internal server error', message: error.message });
   }
-
-  res.json({
-    total: itemData.length,
-    items: itemData.slice(0, 500), // limit for performance
-  });
 });
 
 // GET /api/recipes/:itemId - get all recipes for an item
@@ -169,12 +179,64 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
+// POST /api/inventory - receive inventory from ComputerCraft ME terminal
+let liveInventory = null;
+let lastInventoryUpdate = null;
+
+app.post('/api/inventory', (req, res) => {
+  try {
+    const data = req.body;
+    
+    if (!data || !data.items) {
+      return res.status(400).json({ error: 'Invalid data' });
+    }
+    
+    // Store inventory
+    liveInventory = {
+      computerId: data.computerId,
+      timestamp: data.timestamp,
+      stats: data.stats,
+      items: data.items
+    };
+    lastInventoryUpdate = Date.now();
+    
+    console.log(`[INVENTORY] Updated from Computer #${data.computerId}: ${data.items.length} unique items, ${data.stats.totalItems} total`);
+    
+    res.json({ ok: true, received: data.items.length });
+  } catch (error) {
+    console.error('Error in /api/inventory:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/inventory - get live inventory from ComputerCraft
+app.get('/api/inventory', (req, res) => {
+  if (!liveInventory) {
+    return res.json({
+      online: false,
+      message: 'No inventory data available. Run me_terminal.lua in ComputerCraft.'
+    });
+  }
+  
+  const age = Date.now() - lastInventoryUpdate;
+  const isOnline = age < 10000; // Online if updated in last 10 seconds
+  
+  res.json({
+    online: isOnline,
+    age: age,
+    lastUpdate: new Date(lastInventoryUpdate).toISOString(),
+    ...liveInventory
+  });
+});
+
 // ── Start server ──────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n🚀 Create AutoCraft API running on http://localhost:${PORT}`);
   console.log(`📊 API endpoints:`);
-  console.log(`   GET /api/items?search=brass&namespace=create`);
-  console.log(`   GET /api/recipes/:itemId`);
-  console.log(`   GET /api/search?q=gear`);
-  console.log(`   GET /api/stats\n`);
+  console.log(`   GET  /api/items?search=brass&namespace=create`);
+  console.log(`   GET  /api/recipes/:itemId`);
+  console.log(`   GET  /api/search?q=gear`);
+  console.log(`   GET  /api/stats`);
+  console.log(`   GET  /api/inventory (live from ComputerCraft)`);
+  console.log(`   POST /api/inventory (from me_terminal.lua)\n`);
 });
