@@ -247,9 +247,9 @@ function main()
         drawStats(stats, lastUpdate, success)
         drawTopItems(inventory)
         
-        -- Check for craft jobs every 10 updates (20 seconds)
+        -- Check for craft jobs every 2 updates (4 seconds) - MORE FREQUENT!
         updateCounter = updateCounter + 1
-        if updateCounter >= 10 then
+        if updateCounter >= 2 then
             updateCounter = 0
             checkCraftQueue()
         end
@@ -346,6 +346,50 @@ function parseMechanicalRecipe(recipeData)
     return grid
 end
 
+-- Parse Create simple recipes (pressing, cutting, etc.)
+-- These need only 1 ingredient in slot 5 (center)
+function parseCreateSimpleRecipe(recipeData)
+    local grid = {}
+    
+    -- Get ingredient
+    local ingredients = recipeData.ingredients
+    if not ingredients then
+        return grid
+    end
+    
+    -- Handle single ingredient or array
+    local ingredient = nil
+    if type(ingredients) == "table" then
+        if #ingredients > 0 then
+            ingredient = ingredients[1]
+        else
+            ingredient = ingredients
+        end
+    end
+    
+    if not ingredient then
+        return grid
+    end
+    
+    -- Extract item ID
+    local itemId = nil
+    if type(ingredient) == "string" then
+        itemId = ingredient
+    elseif ingredient.item then
+        itemId = ingredient.item
+    elseif ingredient.tag then
+        itemId = ingredient.tag
+    elseif ingredient[1] and ingredient[1].item then
+        itemId = ingredient[1].item
+    end
+    
+    if itemId then
+        grid[5] = itemId  -- Center slot (position 5 in 3x3 grid)
+    end
+    
+    return grid
+end
+
 -- Find depot by name pattern
 function findDepot(pattern)
     for _, name in ipairs(peripheral.getNames()) do
@@ -427,11 +471,24 @@ function executeCraft(job)
         parseSuccess, parseError = pcall(function()
             grid = parseMechanicalRecipe(recipe.data)
         end)
+    elseif recipe.type == "create:pressing" or 
+           recipe.type == "create:cutting" or
+           recipe.type == "create:milling" or
+           recipe.type == "create:crushing" or
+           recipe.type == "create:sandpaper_polishing" or
+           recipe.type == "create:deploying" then
+        print("  Format: Create Simple Recipe (" .. recipe.type .. ")")
+        print("  NOTE: This uses mechanical press/saw/etc - not crafter!")
+        print("  Putting ingredient in depot center (slot 5)")
+        parseSuccess, parseError = pcall(function()
+            grid = parseCreateSimpleRecipe(recipe.data)
+        end)
     else
         print("  ✗ ERROR: Unsupported recipe type: " .. recipe.type)
         print("  Supported types:")
         print("    - minecraft:crafting_shaped")
         print("    - create:mechanical_crafting")
+        print("    - create:pressing, cutting, milling, crushing")
         return false, "Unsupported recipe type: " .. recipe.type
     end
     
