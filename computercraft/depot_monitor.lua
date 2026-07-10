@@ -7,6 +7,13 @@ local DEPOT_SIDE = "bottom"
 local MONITOR_SIDE = "right"  -- Optional: monitor for display
 local UPDATE_INTERVAL = 2
 
+-- HTTP headers for Railway bypass
+local HTTP_HEADERS = {
+    ["Content-Type"] = "application/json",
+    ["bypass-tunnel-reminder"] = "true",
+    ["ngrok-skip-browser-warning"] = "true"
+}
+
 -- Get all connected depots/chests via wired modem network
 function findStorageDevices()
     local devices = {}
@@ -52,7 +59,7 @@ end
 -- Get item details from API
 function getItemDetails(itemId)
     local safeId = itemId:gsub(":", "__")
-    local response = http.get(API_URL .. "/api/recipes/" .. safeId)
+    local response = http.get(API_URL .. "/api/recipes/" .. safeId, HTTP_HEADERS)
     if response then
         local data = textutils.unserialiseJSON(response.readAll())
         response.close()

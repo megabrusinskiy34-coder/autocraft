@@ -9,12 +9,19 @@ local DEPOT_SIDE = "bottom"  -- Depot connected via wired modem
 local ASSEMBLER_SIDE = "top"  -- Mechanical arm or deployer
 local REFRESH_INTERVAL = 5  -- seconds
 
+-- HTTP headers for Railway bypass
+local HTTP_HEADERS = {
+    ["Content-Type"] = "application/json",
+    ["bypass-tunnel-reminder"] = "true",
+    ["ngrok-skip-browser-warning"] = "true"
+}
+
 -- ══════════════════════════════════════════════════════════════════════════
 -- API Functions
 -- ══════════════════════════════════════════════════════════════════════════
 
 function apiGet(endpoint)
-    local response = http.get(API_URL .. endpoint)
+    local response = http.get(API_URL .. endpoint, HTTP_HEADERS)
     if not response then
         return nil, "Connection failed"
     end

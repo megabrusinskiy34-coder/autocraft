@@ -5,6 +5,13 @@
 
 local API_URL = "https://web-production-bf6e3.up.railway.app"
 
+-- HTTP headers for Railway bypass
+local HTTP_HEADERS = {
+    ["Content-Type"] = "application/json",
+    ["bypass-tunnel-reminder"] = "true",
+    ["ngrok-skip-browser-warning"] = "true"
+}
+
 -- ══════════════════════════════════════════════════════════════════════════
 -- Device Registry
 -- ══════════════════════════════════════════════════════════════════════════
@@ -74,7 +81,7 @@ end
 -- ══════════════════════════════════════════════════════════════════════════
 
 function apiGet(endpoint)
-    local response = http.get(API_URL .. endpoint)
+    local response = http.get(API_URL .. endpoint, HTTP_HEADERS)
     if not response then return nil, "Connection failed" end
     local data = response.readAll()
     response.close()
