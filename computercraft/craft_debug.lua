@@ -366,13 +366,49 @@ function executeCraft(job)
         log("    Found: " .. storageName .. " slot " .. slot)
         
         local storage = peripheral.wrap(storageName)
+        
+        -- Debug: show exact depot name
+        log("    Depot target: '" .. depotName .. "'")
+        log("    Depot name length: " .. #depotName)
+        log("    Calling: storage.pushItems(depotName, " .. slot .. ", 1)")
+        
+        -- Check if depot exists from storage perspective
+        local depotExists = pcall(function()
+            return peripheral.wrap(depotName) ~= nil
+        end)
+        log("    Depot exists: " .. tostring(depotExists))
+        
         local success, moved = pcall(function()
             return storage.pushItems(depotName, slot, 1)
         end)
         
         if not success then
             log("    ✗ pushItems EXCEPTION: " .. tostring(moved))
-            return false, "Transfer exception"
+            log("\n    Troubleshooting:")
+            log("      1. Are vault and depot on same wired modem network?")
+            log("      2. Check peripheral names match exactly")
+            log("      3. Try: peripheral.getNames() in Lua prompt")
+            log("\n    Attempting workaround: Try all depot variations...")
+            
+            -- Try to find any depot and try it
+            for _, name in ipairs(peripheral.getNames()) do
+                if name:match("depot") then
+                    log("      Trying: " .. name)
+                    local ok, result = pcall(function()
+                        return storage.pushItems(name, slot, 1)
+                    end)
+                    if ok and result and result > 0 then
+                        log("      ✓ SUCCESS with: " .. name)
+                        moved = result
+                        success = true
+                        break
+                    end
+                end
+            end
+            
+            if not success then
+                return false, "Transfer exception: " .. tostring(moved)
+            end
         end
         
         log("    pushItems returned: " .. tostring(moved))
