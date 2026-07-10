@@ -4,7 +4,7 @@
 -- ══════════════════════════════════════════════════════════════════════════
 
 -- CONFIGURATION
-local API_URL = "http://localhost:3000"  -- Change to your Railway URL
+local API_URL = "https://web-production-bf6e3.up.railway.app"  -- Change to your Railway URL
 local DEPOT_SIDE = "bottom"  -- Depot connected via wired modem
 local ASSEMBLER_SIDE = "top"  -- Mechanical arm or deployer
 local REFRESH_INTERVAL = 5  -- seconds

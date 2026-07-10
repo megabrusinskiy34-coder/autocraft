@@ -1,5 +1,5 @@
 -- Quick API test script
-local API_URL = "http://localhost:3000"
+local API_URL = "https://web-production-bf6e3.up.railway.app"
 
 print("Testing Create AutoCraft API...")
 print("URL: " .. API_URL)

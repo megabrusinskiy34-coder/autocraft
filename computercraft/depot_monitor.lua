@@ -2,7 +2,7 @@
 -- Depot Monitor - Real-time inventory tracking with API integration
 -- ══════════════════════════════════════════════════════════════════════════
 
-local API_URL = "http://localhost:3000"
+local API_URL = "https://web-production-bf6e3.up.railway.app"
 local DEPOT_SIDE = "bottom"
 local MONITOR_SIDE = "right"  -- Optional: monitor for display
 local UPDATE_INTERVAL = 2
