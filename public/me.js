@@ -313,12 +313,34 @@ function renderQueue() {
                 <div class="queue-item-name">${job.itemId.split(':')[1] || job.itemId}</div>
                 <div class="queue-status">${job.status.toUpperCase()} - ${job.amount}x</div>
             </div>
+            ${job.status === 'pending' ? `<button class="queue-cancel-btn" onclick="cancelCraft(${job.id})">✕</button>` : ''}
         `;
         
         queueList.appendChild(item);
     });
     
     queueCount.textContent = `${craftingQueue.length} active`;
+}
+
+async function cancelCraft(jobId) {
+    try {
+        const response = await fetch(`${API_URL}/api/queue/${jobId}/cancel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showNotification(`Craft job #${jobId} cancelled`, 'success');
+            loadQueue();
+        } else {
+            showNotification(`Failed to cancel: ${data.message}`, 'error');
+        }
+    } catch (error) {
+        console.error('Error cancelling craft:', error);
+        showNotification('Failed to cancel craft', 'error');
+    }
 }
 
 function updateStatus(online, data = null) {

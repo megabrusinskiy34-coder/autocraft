@@ -320,6 +320,26 @@ app.post('/api/queue/:id/fail', (req, res) => {
   }
 });
 
+// POST /api/queue/:id/cancel - cancel pending job
+app.post('/api/queue/:id/cancel', (req, res) => {
+  const jobId = parseInt(req.params.id);
+  const index = craftingQueue.findIndex(j => j.id === jobId);
+  
+  if (index !== -1) {
+    const job = craftingQueue[index];
+    
+    if (job.status === 'pending') {
+      craftingQueue.splice(index, 1);
+      console.log(`[CRAFT] Job #${jobId} cancelled by user`);
+      res.json({ success: true });
+    } else {
+      res.json({ success: false, message: 'Can only cancel pending jobs' });
+    }
+  } else {
+    res.status(404).json({ success: false, message: 'Job not found' });
+  }
+});
+
 // ── Start server ──────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n🚀 Create AutoCraft API running on http://localhost:${PORT}`);

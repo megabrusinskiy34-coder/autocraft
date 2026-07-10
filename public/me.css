@@ -455,11 +455,35 @@ body {
     display: flex;
     gap: 12px;
     align-items: center;
+    position: relative;
 }
 
 .queue-item.active {
     border-color: #4a90e2;
     animation: craftingGlow 2s infinite;
+}
+
+.queue-cancel-btn {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: #e74c3c;
+    color: white;
+    border-radius: 50%;
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.queue-cancel-btn:hover {
+    background: #c0392b;
+    transform: scale(1.1);
 }
 
 @keyframes craftingGlow {
