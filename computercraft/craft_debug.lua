@@ -195,7 +195,7 @@ end
 
 function findDepot(pattern)
     for _, name in ipairs(peripheral.getNames()) do
-        if name:match(pattern) then
+        if name:match(pattern) and not name:match("depot_4$") then
             return name, peripheral.wrap(name)
         end
     end
@@ -303,11 +303,11 @@ function executeCraft(job)
         log("    " .. name .. " (" .. ptype .. ")")
     end
     
-    local depotName, depot = findDepot("depot_[123]$")
+    local depotName, depot = findDepot("depot_%d+$")
     
     if not depot then
         log("  ✗ ERROR: No depot found!")
-        log("  Need: depot_1, depot_2, or depot_3")
+        log("  Need: depot_5, depot_6, depot_7, or any depot_N")
         return false, "No depot"
     end
     
@@ -441,7 +441,7 @@ function executeCraft(job)
     
     -- Step 6: Check output
     log("\n[STEP 6] Checking output...")
-    local outputName, output = findDepot("depot_4$")
+    local outputName, output = findDepot("depot_%d+$")
     
     if output then
         log("  ✓ Found output: " .. outputName)

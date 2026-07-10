@@ -35,7 +35,7 @@ function scanDevices()
         local ptype = peripheral.getType(name)
         
         -- Depots for press input
-        if name:match("depot_[123]$") then
+        if name:match("depot_%d+$") then
             table.insert(devices.depots, {name = name, peripheral = peripheral.wrap(name)})
             print("  [DEPOT] " .. name)
         

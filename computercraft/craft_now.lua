@@ -115,7 +115,7 @@ end
 
 function findDepot(pattern)
     for _, name in ipairs(peripheral.getNames()) do
-        if name:match(pattern) then
+        if name:match(pattern) and not name:match("depot_4$") then
             return name, peripheral.wrap(name)
         end
     end
@@ -243,7 +243,7 @@ function executeCraft(job)
         local ptype = peripheral.getType(name)
         print("    - " .. name .. " (" .. ptype .. ")")
         
-        if name:match("depot_[123]$") then
+        if name:match("depot_%d+$") then
             table.insert(foundDepots, name)
             print("      ^ DEPOT MATCH!")
         end
@@ -253,12 +253,12 @@ function executeCraft(job)
     
     if #foundDepots == 0 then
         print("\n  ✗ ERROR: No depot found!")
-        print("  Expected names: depot_1, depot_2, or depot_3")
-        print("  Or with prefix like: create:depot_1")
+        print("  Expected names: depot_5, depot_6, depot_7, or any depot_N")
+        print("  Or with prefix like: create:depot_5")
         return false, "No depot found"
     end
     
-    local depotName, depot = findDepot("depot_[123]$")
+    local depotName, depot = findDepot("depot_%d+$")
     if not depot then
         print("  ✗ ERROR: Cannot wrap depot peripheral!")
         return false, "Cannot wrap depot"
@@ -337,8 +337,8 @@ function executeCraft(job)
     end
     
     -- Step 6: Check output
-    print("\n[STEP 6] Checking output depot_4...")
-    local outputName, output = findDepot("depot_4$")
+    print("\n[STEP 6] Checking output...")
+    local outputName, output = findDepot("depot_%d+$")
     
     if output then
         print("  ✓ Found: " .. outputName)

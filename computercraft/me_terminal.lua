@@ -412,10 +412,10 @@ function parseCreateSimpleRecipe(recipeData)
     return grid
 end
 
--- Find depot by name pattern
+-- Find depot by name pattern (excludes depot_4 which is for output)
 function findDepot(pattern)
     for _, name in ipairs(peripheral.getNames()) do
-        if name:match(pattern) then
+        if name:match(pattern) and not name:match("depot_4$") then
             return name, peripheral.wrap(name)
         end
     end
@@ -552,8 +552,8 @@ function executeCraft(job)
     
     -- Step 3: Find depot
     print("\n[STEP 3] Finding depot...")
-    print("  Looking for: depot_1, depot_2, or depot_3")
-    print("  Pattern match: 'depot_[123]$'")
+    print("  Looking for: depot_5, depot_6, depot_7 (or any depot_N)")
+    print("  Pattern match: 'depot_%d+$'")
     print("\n  Available peripherals:")
     
     local allPeripherals = peripheral.getNames()
@@ -563,8 +563,8 @@ function executeCraft(job)
         local ptype = peripheral.getType(name)
         print("    - " .. name .. " (type: " .. ptype .. ")")
         
-        -- Check if it matches depot pattern
-        if name:match("depot_[123]$") then
+        -- Check if it matches depot pattern (depot_N where N is any number)
+        if name:match("depot_%d+$") then
             table.insert(foundDepots, name)
             print("      ^ MATCHES depot pattern!")
         end
@@ -579,16 +579,15 @@ function executeCraft(job)
         print("\n  ✗ ERROR: No depot found!")
         print("  Troubleshooting:")
         print("    1. Check peripheral names above")
-        print("    2. Depot must be named exactly 'depot_1', 'depot_2', or 'depot_3'")
-        print("    3. Or contain these names (e.g., 'create:depot_1')")
+        print("    2. Depot must be named like 'depot_5', 'depot_6', etc")
+        print("    3. Or contain these names (e.g., 'create:depot_5')")
         print("    4. Connected via Wired Modem")
         print("    5. Modem is activated (right-click)")
-        print("\n  If your depot has 'create:' prefix, try this pattern:")
-        print("    Look for: " .. (allPeripherals[1] and allPeripherals[1]:match("^([^:]+):") or "none"))
+        print("\n  If your depot has 'create:' prefix, pattern still works")
         return false, "No depot found"
     end
     
-    local depotName, depot = findDepot("depot_[123]$")
+    local depotName, depot = findDepot("depot_%d+$")
     if not depot then
         print("  ✗ ERROR: Found depot names but cannot wrap peripheral!")
         return false, "Cannot wrap depot"
@@ -665,38 +664,27 @@ function executeCraft(job)
     
     for itemNum, item in ipairs(itemsNeeded) do
         print("\n  [" .. itemNum .. "/" .. #itemsNeeded .. "] Processing slot " .. item.index .. ": " .. item.itemId)
-        print("    Searching in storage...")
         
-        -- Find item with detailed logging
-        local storageName, slot, count = nil, nil, nil
-        local searchedStorages = 0
-        local totalItemsSearched = 0
-        
-        for _, storage in ipairs(storageDevices) do
-            searchedStorages = searchedStorages + 1
-            
-            if storage.peripheral and storage.peripheral.list then
-                local items = storage.peripheral.list()
-                
-                for s, i in pairs(items) do
-                    totalItemsSearched = totalItemsSearched + 1
-                    if i.name == item.itemId then
-                        storageName = storage.name
-                        slot = s
-                        count = i.count
-                        break
-                    end
-                end
-                
-                if storageName then break end
-            end
+        -- Check if it's a tag
+        if item.itemId:sub(1, 1) == "#" then
+            print("    This is a TAG: " .. item.itemId:sub(2))
+            print("    Searching for items matching this tag...")
         end
         
-        print("    Searched " .. searchedStorages .. " storage devices")
-        print("    Scanned " .. totalItemsSearched .. " item stacks")
+        print("    Searching in storage...")
+        
+        -- Use findItemInStorage which supports tags!
+        local storageName, slot, count = findItemInStorage(item.itemId)
         
         if not storageName then
             print("    ✗ ERROR: Item not found in any storage!")
+            
+            if item.itemId:sub(1, 1) == "#" then
+                print("    Tag was: " .. item.itemId:sub(2))
+                local baseName = item.itemId:match("([^/]+)$") or "unknown"
+                print("    Looking for items containing: " .. baseName)
+            end
+            
             print("\n    Detailed storage contents:")
             for _, storage in ipairs(storageDevices) do
                 print("      " .. storage.name .. ":")
@@ -736,89 +724,78 @@ function executeCraft(job)
         print("    Attempting transfer...")
         print("      Source: " .. storageName)
         print("      Target: " .. depotName)
-        print("      Slot: " .. slot)
-        print("      Amount: 1")
+        
+        -- Extract short names (without prefix) for pushItems/pullItems
+        local storageShortName = storageName:match("([^:]+)$") or storageName
+        local depotShortName = depotName:match("([^:]+)$") or depotName
+        
+        print("      Short names:")
+        print("        Storage: " .. storageShortName)
+        print("        Depot: " .. depotShortName)
         
         local storage = peripheral.wrap(storageName)
         if not storage then
             print("    ✗ ERROR: Cannot wrap storage peripheral")
-            print("      Peripheral.wrap(" .. storageName .. ") returned nil")
             return false, "Cannot access storage: " .. storageName
         end
         
-        -- Check if storage has pushItems
-        local storageMethods = peripheral.getMethods(storageName) or {}
-        local hasPushItems = false
-        for _, method in ipairs(storageMethods) do
-            if method == "pushItems" then
-                hasPushItems = true
-                break
-            end
-        end
-        
-        if not hasPushItems then
-            print("    ✗ ERROR: Storage doesn't have pushItems() method!")
-            print("      Available methods:")
-            for _, method in ipairs(storageMethods) do
-                print("        - " .. method)
-            end
-            return false, "Storage cannot push items"
-        end
-        
-        print("    Calling: storage.pushItems('" .. depotName .. "', " .. slot .. ", 1)")
-        
+        -- Try 1: storage.pushItems with short depot name
+        print("\n    Try 1: storage.pushItems('" .. depotShortName .. "', " .. slot .. ", 1)")
         local success, result = pcall(function()
-            return storage.pushItems(depotName, slot, 1)
+            return storage.pushItems(depotShortName, slot, 1)
         end)
         
-        if not success then
-            print("    ✗ EXCEPTION in pushItems!")
-            print("    Error: " .. tostring(result))
-            print("    This usually means:")
-            print("      - Target peripheral doesn't exist")
-            print("      - No network connection between storage and depot")
-            print("      - Peripheral names don't match")
-            return false, "Transfer failed: " .. tostring(result)
+        if success and result and result > 0 then
+            print("    ✓ SUCCESS: " .. result .. " item(s) moved")
+        else
+            print("    ✗ Failed: " .. tostring(result))
+            
+            -- Try 2: storage.pushItems with full depot name
+            print("\n    Try 2: storage.pushItems('" .. depotName .. "', " .. slot .. ", 1)")
+            success, result = pcall(function()
+                return storage.pushItems(depotName, slot, 1)
+            end)
+            
+            if success and result and result > 0 then
+                print("    ✓ SUCCESS: " .. result .. " item(s) moved")
+            else
+                print("    ✗ Failed: " .. tostring(result))
+                
+                -- Try 3: depot.pullItems with short storage name
+                print("\n    Try 3: depot.pullItems('" .. storageShortName .. "', " .. slot .. ", 1)")
+                success, result = pcall(function()
+                    return depot.pullItems(storageShortName, slot, 1)
+                end)
+                
+                if success and result and result > 0 then
+                    print("    ✓ SUCCESS: " .. result .. " item(s) moved")
+                else
+                    print("    ✗ Failed: " .. tostring(result))
+                    
+                    -- Try 4: depot.pullItems with full storage name
+                    print("\n    Try 4: depot.pullItems('" .. storageName .. "', " .. slot .. ", 1)")
+                    success, result = pcall(function()
+                        return depot.pullItems(storageName, slot, 1)
+                    end)
+                    
+                    if success and result and result > 0 then
+                        print("    ✓ SUCCESS: " .. result .. " item(s) moved")
+                    else
+                        print("    ✗ All 4 methods failed!")
+                        print("    Last error: " .. tostring(result))
+                        return false, "Cannot transfer - check wired modem network"
+                    end
+                end
+            end
         end
         
         local moved = result
-        print("    pushItems returned: " .. tostring(moved))
-        
-        if type(moved) ~= "number" then
-            print("    ✗ ERROR: pushItems didn't return a number!")
-            print("    Returned type: " .. type(moved))
-            print("    Returned value: " .. tostring(moved))
-            return false, "Invalid pushItems return value"
-        end
-        
         if moved == 0 then
-            print("    ✗ ERROR: 0 items moved!")
-            print("\n    Troubleshooting:")
-            print("      1. Check if depot is full")
-            
-            -- Check depot space
-            local depotItems = depot.list()
-            local depotUsed = 0
-            for _ in pairs(depotItems) do depotUsed = depotUsed + 1 end
-            local depotSize = depot.size and depot.size() or "unknown"
-            print("      2. Depot usage: " .. depotUsed .. "/" .. tostring(depotSize))
-            
-            print("      3. Items currently in depot:")
-            if next(depotItems) then
-                for s, i in pairs(depotItems) do
-                    print("         Slot " .. s .. ": " .. i.name .. " x" .. i.count)
-                end
-            else
-                print("         (empty)")
-            end
-            
-            print("      4. Check network connections")
-            print("      5. Verify depot accepts this item type")
-            
-            return false, "Failed to move " .. item.itemId .. " (0 items transferred)"
+            print("    ✗ 0 items moved (depot might be full)")
+            return false, "Failed to move item"
         end
         
-        print("    ✓ SUCCESS: Moved " .. moved .. "x " .. item.itemId)
+        print("    ✓ Moved: " .. moved .. "x " .. item.itemId)
         print("    Waiting 0.5s before next item...")
         sleep(0.5)
     end
@@ -839,12 +816,12 @@ function executeCraft(job)
     
     -- Step 6: Check output
     print("\n[STEP 6] Checking output...")
-    print("  Looking for output depot (depot_4)...")
+    print("  Looking for output depot...")
     
-    local outputName, output = findDepot("depot_4$")
+    local outputName, output = findDepot("depot_%d+$")
     
     if not output then
-        print("  ⚠ Output depot (depot_4) not found")
+        print("  ⚠ Output depot not found")
         print("  Available depots:")
         for _, name in ipairs(peripheral.getNames()) do
             if name:match("depot") then
