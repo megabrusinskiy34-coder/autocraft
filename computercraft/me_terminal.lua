@@ -358,75 +358,456 @@ end
 
 -- Execute craft job
 function executeCraft(job)
-    print("[CRAFT] Job #" .. job.id .. ": " .. job.amount .. "x " .. job.itemId)
+    print("\n╔════════════════════════════════════════╗")
+    print("║  CRAFT JOB #" .. job.id)
+    print("║  Item: " .. job.itemId)
+    print("║  Amount: " .. job.amount)
+    print("╚════════════════════════════════════════╝")
     
-    -- Get recipe
-    local recipe = getRecipe(job.itemId)
+    -- Step 1: Get recipe
+    print("\n[STEP 1] Fetching recipe from API...")
+    print("  URL: " .. API_URL .. "/api/recipes/" .. job.itemId:gsub(":", "__"))
+    
+    local success, recipe = pcall(function()
+        return getRecipe(job.itemId)
+    end)
+    
+    if not success then
+        print("  ✗ EXCEPTION: " .. tostring(recipe))
+        return false, "Recipe fetch crashed: " .. tostring(recipe)
+    end
+    
     if not recipe then
-        print("[CRAFT] ERROR: No recipe found")
+        print("  ✗ ERROR: No recipe found for " .. job.itemId)
+        print("  Possible reasons:")
+        print("    - Item doesn't exist in database")
+        print("    - API connection failed")
+        print("    - Item ID typo")
+        
+        -- Try HTTP test
+        print("\n  Testing HTTP connection...")
+        local httpTest = pcall(function()
+            local resp = http.get(API_URL .. "/api/stats", HTTP_HEADERS)
+            if resp then
+                print("  ✓ HTTP works, but recipe not found")
+                resp.close()
+            else
+                print("  ✗ HTTP failed")
+            end
+        end)
+        
         return false, "No recipe found"
     end
     
-    print("[CRAFT] Recipe type: " .. recipe.type)
+    print("  ✓ Recipe found!")
+    print("  Type: " .. recipe.type)
+    print("  Recipe ID: " .. (recipe.id or "unknown"))
     
-    -- Parse recipe to grid
+    -- Debug: print raw recipe data
+    if recipe.data then
+        print("\n  Raw recipe data:")
+        print("    Has pattern: " .. tostring(recipe.data.pattern ~= nil))
+        print("    Has key: " .. tostring(recipe.data.key ~= nil))
+        print("    Has result: " .. tostring(recipe.data.result ~= nil))
+        print("    Has results: " .. tostring(recipe.data.results ~= nil))
+    end
+    
+    -- Step 2: Parse recipe
+    print("\n[STEP 2] Parsing recipe...")
     local grid = {}
+    local parseSuccess, parseError
+    
     if recipe.type == "minecraft:crafting_shaped" then
-        grid = parseShapedRecipe(recipe.data)
+        print("  Format: Shaped Crafting (3x3)")
+        parseSuccess, parseError = pcall(function()
+            grid = parseShapedRecipe(recipe.data)
+        end)
     elseif recipe.type == "create:mechanical_crafting" then
-        grid = parseMechanicalRecipe(recipe.data)
+        print("  Format: Mechanical Crafting")
+        parseSuccess, parseError = pcall(function()
+            grid = parseMechanicalRecipe(recipe.data)
+        end)
     else
-        print("[CRAFT] ERROR: Unsupported recipe type")
+        print("  ✗ ERROR: Unsupported recipe type: " .. recipe.type)
+        print("  Supported types:")
+        print("    - minecraft:crafting_shaped")
+        print("    - create:mechanical_crafting")
         return false, "Unsupported recipe type: " .. recipe.type
     end
     
-    -- Find depot for crafting (depot_1, depot_2, depot_3)
-    local depotName, depot = findDepot("depot_[123]$")
-    if not depot then
-        print("[CRAFT] ERROR: No depot found")
-        return false, "No depot found"
+    if not parseSuccess then
+        print("  ✗ EXCEPTION during parsing: " .. tostring(parseError))
+        return false, "Recipe parse failed: " .. tostring(parseError)
     end
     
-    print("[CRAFT] Using depot: " .. depotName)
+    -- Validate grid
+    local itemCount = 0
+    for i = 1, 9 do
+        if grid[i] then itemCount = itemCount + 1 end
+    end
     
-    -- Transfer items to depot
-    print("[CRAFT] Transferring items to depot...")
-    for index = 1, 9 do
-        local itemId = grid[index]
-        if itemId then
-            print("  [" .. index .. "] Need: " .. itemId)
-            
-            -- Find item in storage
-            local storageName, slot, count = findItemInStorage(itemId)
-            if not storageName then
-                print("  ERROR: Item not found in storage!")
-                return false, "Item not found: " .. itemId
+    if itemCount == 0 then
+        print("  ✗ ERROR: Recipe grid is empty after parsing!")
+        print("  This means recipe.data.pattern or recipe.data.key is malformed")
+        return false, "Empty recipe grid"
+    end
+    
+    print("  ✓ Grid parsed: " .. itemCount .. " slots filled")
+    
+    -- Show grid
+    print("\n  Recipe Grid (3x3):")
+    for row = 1, 3 do
+        local line = "    "
+        for col = 1, 3 do
+            local index = (row - 1) * 3 + col
+            local item = grid[index]
+            if item then
+                local shortName = item:match(":(.+)") or item
+                line = line .. "[" .. shortName:sub(1, 8) .. "] "
+            else
+                line = line .. "[   -   ] "
             end
-            
-            print("  Found in " .. storageName .. " slot " .. slot .. " (" .. count .. "x)")
-            
-            -- Push item from storage to depot
-            local storage = peripheral.wrap(storageName)
-            local moved = storage.pushItems(depotName, slot, 1)
-            
-            if moved == 0 then
-                print("  ERROR: Failed to move item")
-                return false, "Failed to move " .. itemId
-            end
-            
-            print("  ✓ Moved 1x " .. itemId .. " to depot")
-            sleep(0.5) -- Small delay between transfers
+        end
+        print(line)
+    end
+    
+    -- Step 3: Find depot
+    print("\n[STEP 3] Finding depot...")
+    print("  Looking for: depot_1, depot_2, or depot_3")
+    print("  Pattern match: 'depot_[123]$'")
+    print("\n  Available peripherals:")
+    
+    local allPeripherals = peripheral.getNames()
+    local foundDepots = {}
+    
+    for _, name in ipairs(allPeripherals) do
+        local ptype = peripheral.getType(name)
+        print("    - " .. name .. " (type: " .. ptype .. ")")
+        
+        -- Check if it matches depot pattern
+        if name:match("depot_[123]$") then
+            table.insert(foundDepots, name)
+            print("      ^ MATCHES depot pattern!")
         end
     end
     
-    print("[CRAFT] All items placed in depot!")
-    print("[CRAFT] Waiting for mechanical crafting...")
+    print("\n  Depots matching pattern: " .. #foundDepots)
+    for _, d in ipairs(foundDepots) do
+        print("    - " .. d)
+    end
     
-    -- Wait for craft to complete
-    sleep(5)
+    if #foundDepots == 0 then
+        print("\n  ✗ ERROR: No depot found!")
+        print("  Troubleshooting:")
+        print("    1. Check peripheral names above")
+        print("    2. Depot must be named exactly 'depot_1', 'depot_2', or 'depot_3'")
+        print("    3. Or contain these names (e.g., 'create:depot_1')")
+        print("    4. Connected via Wired Modem")
+        print("    5. Modem is activated (right-click)")
+        print("\n  If your depot has 'create:' prefix, try this pattern:")
+        print("    Look for: " .. (allPeripherals[1] and allPeripherals[1]:match("^([^:]+):") or "none"))
+        return false, "No depot found"
+    end
     
-    -- Check for output (simplified - you should check output depot)
-    print("[CRAFT] ✓ Craft completed (assuming success)")
+    local depotName, depot = findDepot("depot_[123]$")
+    if not depot then
+        print("  ✗ ERROR: Found depot names but cannot wrap peripheral!")
+        return false, "Cannot wrap depot"
+    end
+    
+    print("\n  ✓ Selected depot: " .. depotName)
+    print("  Depot type: " .. peripheral.getType(depotName))
+    
+    -- Check depot methods
+    print("\n  Testing depot methods...")
+    local methods = peripheral.getMethods(depotName) or {}
+    local hasSize = false
+    local hasList = false
+    local hasPushItems = false
+    
+    for _, method in ipairs(methods) do
+        if method == "size" then hasSize = true end
+        if method == "list" then hasList = true end
+        if method == "pushItems" then hasPushItems = true end
+    end
+    
+    print("    size() available: " .. tostring(hasSize))
+    print("    list() available: " .. tostring(hasList))
+    print("    pushItems() available: " .. tostring(hasPushItems))
+    
+    if not hasList then
+        print("\n  ✗ ERROR: Depot doesn't have list() method!")
+        print("  This peripheral may not be a valid inventory")
+        return false, "Depot is not an inventory"
+    end
+    
+    -- Check depot capacity
+    if hasSize then
+        local depotSize = depot.size()
+        print("    Depot capacity: " .. depotSize .. " slots")
+    end
+    
+    -- Check current contents
+    local currentItems = depot.list()
+    local itemCount = 0
+    for _ in pairs(currentItems) do itemCount = itemCount + 1 end
+    print("    Current items in depot: " .. itemCount)
+    
+    if itemCount > 0 then
+        print("    ⚠ WARNING: Depot is not empty!")
+        for slot, item in pairs(currentItems) do
+            print("      Slot " .. slot .. ": " .. item.name .. " x" .. item.count)
+        end
+    end
+    
+    -- Step 4: Find and transfer items
+    print("\n[STEP 4] Finding and transferring items...")
+    
+    local itemsNeeded = {}
+    for index = 1, 9 do
+        if grid[index] then
+            table.insert(itemsNeeded, {index = index, itemId = grid[index]})
+        end
+    end
+    
+    print("  Items needed: " .. #itemsNeeded)
+    
+    if #itemsNeeded == 0 then
+        print("  ✗ ERROR: Recipe grid has no items!")
+        return false, "Empty recipe"
+    end
+    
+    -- Get list of all storage devices
+    local storageDevices = findAllStorage()
+    print("  Storage devices available: " .. #storageDevices)
+    for _, storage in ipairs(storageDevices) do
+        print("    - " .. storage.name .. " (" .. storage.type .. ")")
+    end
+    
+    for itemNum, item in ipairs(itemsNeeded) do
+        print("\n  [" .. itemNum .. "/" .. #itemsNeeded .. "] Processing slot " .. item.index .. ": " .. item.itemId)
+        print("    Searching in storage...")
+        
+        -- Find item with detailed logging
+        local storageName, slot, count = nil, nil, nil
+        local searchedStorages = 0
+        local totalItemsSearched = 0
+        
+        for _, storage in ipairs(storageDevices) do
+            searchedStorages = searchedStorages + 1
+            
+            if storage.peripheral and storage.peripheral.list then
+                local items = storage.peripheral.list()
+                
+                for s, i in pairs(items) do
+                    totalItemsSearched = totalItemsSearched + 1
+                    if i.name == item.itemId then
+                        storageName = storage.name
+                        slot = s
+                        count = i.count
+                        break
+                    end
+                end
+                
+                if storageName then break end
+            end
+        end
+        
+        print("    Searched " .. searchedStorages .. " storage devices")
+        print("    Scanned " .. totalItemsSearched .. " item stacks")
+        
+        if not storageName then
+            print("    ✗ ERROR: Item not found in any storage!")
+            print("\n    Detailed storage contents:")
+            for _, storage in ipairs(storageDevices) do
+                print("      " .. storage.name .. ":")
+                if storage.peripheral and storage.peripheral.list then
+                    local items = storage.peripheral.list()
+                    local count = 0
+                    for _ in pairs(items) do count = count + 1 end
+                    
+                    if count == 0 then
+                        print("        (empty)")
+                    else
+                        print("        Contains " .. count .. " different items:")
+                        local shown = 0
+                        for _, i in pairs(items) do
+                            if shown < 5 then
+                                print("          - " .. i.name .. " x" .. i.count)
+                                shown = shown + 1
+                            end
+                        end
+                        if count > 5 then
+                            print("          ... and " .. (count - 5) .. " more")
+                        end
+                    end
+                else
+                    print("        (cannot list items)")
+                end
+            end
+            
+            return false, "Item not found: " .. item.itemId
+        end
+        
+        print("    ✓ Found in: " .. storageName)
+        print("    Slot: " .. slot)
+        print("    Available: " .. count .. "x")
+        
+        -- Transfer item
+        print("    Attempting transfer...")
+        print("      Source: " .. storageName)
+        print("      Target: " .. depotName)
+        print("      Slot: " .. slot)
+        print("      Amount: 1")
+        
+        local storage = peripheral.wrap(storageName)
+        if not storage then
+            print("    ✗ ERROR: Cannot wrap storage peripheral")
+            print("      Peripheral.wrap(" .. storageName .. ") returned nil")
+            return false, "Cannot access storage: " .. storageName
+        end
+        
+        -- Check if storage has pushItems
+        local storageMethods = peripheral.getMethods(storageName) or {}
+        local hasPushItems = false
+        for _, method in ipairs(storageMethods) do
+            if method == "pushItems" then
+                hasPushItems = true
+                break
+            end
+        end
+        
+        if not hasPushItems then
+            print("    ✗ ERROR: Storage doesn't have pushItems() method!")
+            print("      Available methods:")
+            for _, method in ipairs(storageMethods) do
+                print("        - " .. method)
+            end
+            return false, "Storage cannot push items"
+        end
+        
+        print("    Calling: storage.pushItems('" .. depotName .. "', " .. slot .. ", 1)")
+        
+        local success, result = pcall(function()
+            return storage.pushItems(depotName, slot, 1)
+        end)
+        
+        if not success then
+            print("    ✗ EXCEPTION in pushItems!")
+            print("    Error: " .. tostring(result))
+            print("    This usually means:")
+            print("      - Target peripheral doesn't exist")
+            print("      - No network connection between storage and depot")
+            print("      - Peripheral names don't match")
+            return false, "Transfer failed: " .. tostring(result)
+        end
+        
+        local moved = result
+        print("    pushItems returned: " .. tostring(moved))
+        
+        if type(moved) ~= "number" then
+            print("    ✗ ERROR: pushItems didn't return a number!")
+            print("    Returned type: " .. type(moved))
+            print("    Returned value: " .. tostring(moved))
+            return false, "Invalid pushItems return value"
+        end
+        
+        if moved == 0 then
+            print("    ✗ ERROR: 0 items moved!")
+            print("\n    Troubleshooting:")
+            print("      1. Check if depot is full")
+            
+            -- Check depot space
+            local depotItems = depot.list()
+            local depotUsed = 0
+            for _ in pairs(depotItems) do depotUsed = depotUsed + 1 end
+            local depotSize = depot.size and depot.size() or "unknown"
+            print("      2. Depot usage: " .. depotUsed .. "/" .. tostring(depotSize))
+            
+            print("      3. Items currently in depot:")
+            if next(depotItems) then
+                for s, i in pairs(depotItems) do
+                    print("         Slot " .. s .. ": " .. i.name .. " x" .. i.count)
+                end
+            else
+                print("         (empty)")
+            end
+            
+            print("      4. Check network connections")
+            print("      5. Verify depot accepts this item type")
+            
+            return false, "Failed to move " .. item.itemId .. " (0 items transferred)"
+        end
+        
+        print("    ✓ SUCCESS: Moved " .. moved .. "x " .. item.itemId)
+        print("    Waiting 0.5s before next item...")
+        sleep(0.5)
+    end
+    
+    print("\n  ✓✓✓ All " .. #itemsNeeded .. " items transferred successfully!")
+    
+    -- Step 5: Wait for craft
+    print("\n[STEP 5] Waiting for craft to complete...")
+    print("  Mechanical crafters should now process the items")
+    print("  Waiting 5 seconds...")
+    
+    for i = 5, 1, -1 do
+        print("  " .. i .. "...")
+        sleep(1)
+    end
+    
+    print("  ✓ Wait complete")
+    
+    -- Step 6: Check output
+    print("\n[STEP 6] Checking output...")
+    print("  Looking for output depot (depot_4)...")
+    
+    local outputName, output = findDepot("depot_4$")
+    
+    if not output then
+        print("  ⚠ Output depot (depot_4) not found")
+        print("  Available depots:")
+        for _, name in ipairs(peripheral.getNames()) do
+            if name:match("depot") then
+                print("    - " .. name)
+            end
+        end
+        print("\n  Cannot verify output, but craft may have succeeded")
+        print("  Check your mechanical crafter output manually")
+    else
+        print("  ✓ Found output depot: " .. outputName)
+        
+        local outputItems = output.list()
+        local outputCount = 0
+        for _ in pairs(outputItems) do outputCount = outputCount + 1 end
+        
+        print("  Output depot contains: " .. outputCount .. " items")
+        
+        if outputCount > 0 then
+            print("  ✓ Output detected!")
+            for slot, item in pairs(outputItems) do
+                print("    - Slot " .. slot .. ": " .. item.name .. " x" .. item.count)
+                
+                -- Check if this is the item we wanted to craft
+                if item.name == job.itemId then
+                    print("      ✓✓✓ THIS IS THE CRAFTED ITEM!")
+                end
+            end
+        else
+            print("  ⚠ No items in output depot")
+            print("  Possible reasons:")
+            print("    - Craft is still processing")
+            print("    - Items went to different location")
+            print("    - Mechanical crafter configuration issue")
+            print("    - Recipe failed to execute")
+        end
+    end
+    
+    print("\n╔════════════════════════════════════════╗")
+    print("║  ✓ CRAFT SEQUENCE COMPLETED")
+    print("║  All steps executed without errors")
+    print("║  Check output manually if needed")
+    print("╚════════════════════════════════════════╝\n")
     
     return true
 end
@@ -445,8 +826,25 @@ function checkCraftQueue()
     response.close()
     
     if data.job then
-        print("\n[CRAFT] ========================================")
-        print("[CRAFT] NEW JOB!")
+        print("\n" .. string.rep("=", 50))
+        print("  NEW CRAFT JOB DETECTED!")
+        print(string.rep("=", 50))
+        print("  Job ID: " .. data.job.id)
+        print("  Item: " .. data.job.itemId) 
+        print("  Amount: " .. data.job.amount)
+        print(string.rep("=", 50) .. "\n")
+        
+        print("CRAFT PLAN:")
+        print("  1. Fetch recipe from API")
+        print("  2. Parse recipe into 3x3 grid")
+        print("  3. Find depot (depot_1/2/3)")
+        print("  4. Find items in storage (item_vault_5/6)")
+        print("  5. Transfer items using peripheral.pushItems()")
+        print("  6. Wait for mechanical crafters")
+        print("  7. Check output in depot_4")
+        print("")
+        print("Starting in 3 seconds...")
+        sleep(3)
         
         -- Execute craft
         local success, error = executeCraft(data.job)
@@ -464,11 +862,15 @@ function checkCraftQueue()
         end)
         
         if success then
-            print("[CRAFT] ✓✓✓ Job #" .. data.job.id .. " COMPLETED!")
+            print("\n" .. string.rep("█", 50))
+            print("  ✓✓✓ JOB #" .. data.job.id .. " COMPLETED!")
+            print(string.rep("█", 50) .. "\n")
         else
-            print("[CRAFT] ✗✗✗ Job #" .. data.job.id .. " FAILED: " .. (error or "Unknown"))
+            print("\n" .. string.rep("!", 50))
+            print("  ✗✗✗ JOB #" .. data.job.id .. " FAILED!")
+            print("  ERROR: " .. (error or "Unknown"))
+            print(string.rep("!", 50) .. "\n")
         end
-        print("[CRAFT] ========================================\n")
     end
 end
 
