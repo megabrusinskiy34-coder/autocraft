@@ -729,73 +729,143 @@ function executeCraft(job)
         local storageShortName = storageName:match("([^:]+)$") or storageName
         local depotShortName = depotName:match("([^:]+)$") or depotName
         
-        print("      Short names:")
-        print("        Storage: " .. storageShortName)
-        print("        Depot: " .. depotShortName)
-        
         local storage = peripheral.wrap(storageName)
         if not storage then
             print("    ✗ ERROR: Cannot wrap storage peripheral")
             return false, "Cannot access storage: " .. storageName
         end
         
-        -- Try 1: storage.pushItems with short depot name
-        print("\n    Try 1: storage.pushItems('" .. depotShortName .. "', " .. slot .. ", 1)")
-        local success, result = pcall(function()
+        -- Find intermediary chest (buffer)
+        local bufferName = nil
+        for _, name in ipairs(peripheral.getNames()) do
+            local ptype = peripheral.getType(name)
+            -- Look for regular chest as buffer
+            if ptype == "minecraft:chest" or name:match("chest") and not name:match("vault") then
+                bufferName = name
+                break
+            end
+        end
+        
+        local success, result
+        local moved = 0
+        
+        -- METHOD 1: Try direct transfer (4 variations)
+        print("\n    Method 1: Direct transfer")
+        
+        -- Try short name push
+        success, result = pcall(function()
             return storage.pushItems(depotShortName, slot, 1)
         end)
         
         if success and result and result > 0 then
-            print("    ✓ SUCCESS: " .. result .. " item(s) moved")
+            moved = result
+            print("    ✓ Direct push (short name) worked!")
         else
-            print("    ✗ Failed: " .. tostring(result))
-            
-            -- Try 2: storage.pushItems with full depot name
-            print("\n    Try 2: storage.pushItems('" .. depotName .. "', " .. slot .. ", 1)")
+            -- Try full name push
             success, result = pcall(function()
                 return storage.pushItems(depotName, slot, 1)
             end)
             
             if success and result and result > 0 then
-                print("    ✓ SUCCESS: " .. result .. " item(s) moved")
+                moved = result
+                print("    ✓ Direct push (full name) worked!")
             else
-                print("    ✗ Failed: " .. tostring(result))
-                
-                -- Try 3: depot.pullItems with short storage name
-                print("\n    Try 3: depot.pullItems('" .. storageShortName .. "', " .. slot .. ", 1)")
+                -- Try short name pull
                 success, result = pcall(function()
                     return depot.pullItems(storageShortName, slot, 1)
                 end)
                 
                 if success and result and result > 0 then
-                    print("    ✓ SUCCESS: " .. result .. " item(s) moved")
+                    moved = result
+                    print("    ✓ Direct pull (short name) worked!")
                 else
-                    print("    ✗ Failed: " .. tostring(result))
-                    
-                    -- Try 4: depot.pullItems with full storage name
-                    print("\n    Try 4: depot.pullItems('" .. storageName .. "', " .. slot .. ", 1)")
+                    -- Try full name pull
                     success, result = pcall(function()
                         return depot.pullItems(storageName, slot, 1)
                     end)
                     
                     if success and result and result > 0 then
-                        print("    ✓ SUCCESS: " .. result .. " item(s) moved")
+                        moved = result
+                        print("    ✓ Direct pull (full name) worked!")
                     else
-                        print("    ✗ All 4 methods failed!")
-                        print("    Last error: " .. tostring(result))
-                        return false, "Cannot transfer - check wired modem network"
+                        print("    ✗ All direct methods failed")
+                        
+                        -- METHOD 2: Use buffer chest
+                        if bufferName then
+                            print("\n    Method 2: Using buffer chest: " .. bufferName)
+                            local buffer = peripheral.wrap(bufferName)
+                            local bufferShortName = bufferName:match("([^:]+)$") or bufferName
+                            
+                            -- Step 1: Storage -> Buffer
+                            print("      Step 1: " .. storageName .. " -> " .. bufferName)
+                            success, result = pcall(function()
+                                return storage.pushItems(bufferShortName, slot, 1)
+                            end)
+                            
+                            if not success or not result or result == 0 then
+                                -- Try full name
+                                success, result = pcall(function()
+                                    return storage.pushItems(bufferName, slot, 1)
+                                end)
+                            end
+                            
+                            if success and result and result > 0 then
+                                print("      ✓ Moved to buffer: " .. result)
+                                
+                                -- Find item in buffer
+                                local bufferSlot = nil
+                                for s, i in pairs(buffer.list()) do
+                                    if i.name == item.itemId or (item.itemId:sub(1,1) == "#" and i.name:find(item.itemId:match("([^/]+)$"))) then
+                                        bufferSlot = s
+                                        break
+                                    end
+                                end
+                                
+                                if bufferSlot then
+                                    -- Step 2: Buffer -> Depot
+                                    print("      Step 2: " .. bufferName .. " -> " .. depotName)
+                                    success, result = pcall(function()
+                                        return buffer.pushItems(depotShortName, bufferSlot, 1)
+                                    end)
+                                    
+                                    if not success or not result or result == 0 then
+                                        success, result = pcall(function()
+                                            return depot.pullItems(bufferShortName, bufferSlot, 1)
+                                        end)
+                                    end
+                                    
+                                    if success and result and result > 0 then
+                                        moved = result
+                                        print("      ✓ Moved to depot: " .. result)
+                                    else
+                                        print("      ✗ Failed to move from buffer to depot")
+                                        return false, "Buffer->Depot transfer failed"
+                                    end
+                                else
+                                    print("      ✗ Item not found in buffer")
+                                    return false, "Item lost in buffer"
+                                end
+                            else
+                                print("      ✗ Failed to move to buffer")
+                                return false, "Storage->Buffer transfer failed"
+                            end
+                        else
+                            print("\n    ✗ No buffer chest found!")
+                            print("    Solution: Place a minecraft:chest next to computer")
+                            print("    Connect it to wired modem network")
+                            return false, "Cannot transfer - no route available"
+                        end
                     end
                 end
             end
         end
         
-        local moved = result
         if moved == 0 then
-            print("    ✗ 0 items moved (depot might be full)")
+            print("    ✗ 0 items moved")
             return false, "Failed to move item"
         end
         
-        print("    ✓ Moved: " .. moved .. "x " .. item.itemId)
+        print("    ✓ SUCCESS: Moved " .. moved .. "x " .. item.itemId)
         print("    Waiting 0.5s before next item...")
         sleep(0.5)
     end
