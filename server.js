@@ -119,6 +119,20 @@ app.get('/api/recipe/:id', (req, res) => {
   r ? res.json(r) : res.status(404).json({ error: 'not found' });
 });
 
+// ── Debug endpoint ────────────────────────────────────────────────────────
+app.get('/api/debug', (req, res) => {
+  res.json({
+    recipesLoaded: Object.keys(recipesDB).length,
+    texturesLoaded: Object.keys(itemTextures).length,
+    customRecipes: Object.keys(customRecipes).length,
+    queueLength: craftingQueue.length,
+    logLength: craftLog.length,
+    inventory: liveInventory ? { online: true, items: liveInventory.items?.length } : { online: false },
+    sseClients: sseClients.size,
+    uptime: process.uptime(),
+  });
+});
+
 // ── Textures map (full) ───────────────────────────────────────────────────
 app.get('/api/textures', (req, res) => {
   res.json(itemTextures);

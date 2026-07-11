@@ -315,66 +315,170 @@ end
 
 function runCrafterRecipe(job, grid)
     local crafter = peripheral.wrap(CRAFTER_NAME)
-    if not crafter then return false, "crafter not found" end
+    if not crafter then
+        return false, "crafter '"..CRAFTER_NAME.."' not found. Available: "..table.concat(peripheral.getNames(), ", ")
+    end
     local output = peripheral.wrap(OUTPUT_NAME)
-    if not output then return false, "output barrel not found" end
+    if not output then
+        print("  [WARN] output barrel '"..OUTPUT_NAME.."' not found as peripheral")
+        print("  Available peripherals: "..table.concat(peripheral.getNames(), ", "))
+        -- Try to find any barrel
+        for _, name in ipairs(peripheral.getNames()) do
+            if peripheral.getType(name) == "minecraft:barrel" or name:match("barrel") then
+                print("  Found barrel: "..name)
+            end
+        end
+        return false, "output barrel '"..OUTPUT_NAME.."' not found"
+    end
 
     local totalCrafted = 0
+    print("  Crafter: "..CRAFTER_NAME.." | Output: "..OUTPUT_NAME)
 
     for pass = 1, job.amount do
         term.setTextColor(colors.yellow)
         print("  Pass "..pass.."/"..job.amount)
         term.setTextColor(colors.white)
 
+        -- Clear crafter before each pass
         clearCrafter()
 
+        -- Count how many slots need filling
+        local slotsNeeded = 0
+        for i = 1, 9 do if grid[i] then slotsNeeded = slotsNeeded + 1 end end
+        print("  Filling "..slotsNeeded.." ingredient slots...")
+
         -- Fill slots 1-9
+        local fillFailed = false
         for slotIdx = 1, 9 do
             if grid[slotIdx] then
                 local itemId = grid[slotIdx]
                 local src, srcSlot, avail = findItem(itemId)
                 if not src then
-                    return false, "missing: "..itemId
+                    print("  [FAIL] Missing ingredient: "..itemId)
+                    -- Show what's in storage
+                    print("  Storage contents:")
+                    for _, dev in ipairs(findAllStorage()) do
+                        local ok, items = pcall(function() return dev.p.list() end)
+                        if ok and items then
+                            local count = 0
+                            for _ in pairs(items) do count = count + 1 end
+                            if count > 0 then
+                                print("    "..dev.name..": "..count.." types")
+                            end
+                        end
+                    end
+                    fillFailed = true
+                    break
                 end
-                print("    ["..slotIdx.."] "..itemId:match(":(.+)").." <- "..src)
+                print("    slot "..slotIdx..": "..(itemId:match(":(.+)") or itemId).." <- "..src.."["..srcSlot.."]")
                 local ok, n = moveViaBuffer(src, srcSlot, 1, CRAFTER_NAME, slotIdx)
-                if not ok then return false, "slot "..slotIdx.." failed: "..(n or "?") end
-                sleep(0.1)
+                if not ok then
+                    print("  [FAIL] Transfer to slot "..slotIdx..": "..(n or "?"))
+                    fillFailed = true
+                    break
+                end
+                sleep(0.15)
             end
         end
 
+        if fillFailed then
+            clearCrafter()
+            return false, "ingredient transfer failed on pass "..pass
+        end
+
+        -- Verify crafter has items
+        local crafterItems = crafter.list()
+        local crafterCount = 0
+        for _ in pairs(crafterItems) do crafterCount = crafterCount + 1 end
+        print("  Crafter has "..crafterCount.." slots filled")
+
+        if crafterCount == 0 then
+            return false, "crafter empty after filling - pushItems may have failed"
+        end
+
         -- Redstone pulse → crafter fires
-        print("  Redstone pulse ("..REDSTONE_SIDE..")...")
+        print("  Redstone pulse on '"..REDSTONE_SIDE.."'...")
         local rsOk, rsErr = pcall(function()
             redstone.setOutput(REDSTONE_SIDE, true)
         end)
         if not rsOk then
-            print("  [WARN] redstone.setOutput failed: "..tostring(rsErr))
+            print("  [WARN] RS error: "..tostring(rsErr))
+            print("  Available RS sides: top, bottom, left, right, front, back")
         end
         sleep(0.5)
         pcall(function() redstone.setOutput(REDSTONE_SIDE, false) end)
 
-        -- Wait up to 5s for result in barrel_1
+        -- Wait up to 6s for result in barrel_1
+        -- Also check if crafter cleared (means it processed)
         local got = false
-        for t = 1, 10 do
+        local crafterCleared = false
+
+        print("  Waiting for output in "..OUTPUT_NAME.."...")
+        for t = 1, 12 do
             sleep(0.5)
-            for _, itm in pairs(output.list()) do
-                if itm.name == job.itemId then
-                    totalCrafted = totalCrafted + itm.count
-                    term.setTextColor(colors.lime)
-                    print("  Got "..itm.count.."x "..itm.name)
-                    term.setTextColor(colors.white)
-                    got = true; break
+
+            -- Check output barrel
+            local ok2, outItems = pcall(function() return output.list() end)
+            if ok2 and outItems then
+                for _, itm in pairs(outItems) do
+                    if itm.name == job.itemId then
+                        totalCrafted = totalCrafted + itm.count
+                        term.setTextColor(colors.lime)
+                        print("  ✓ Got "..itm.count.."x "..itm.name.." in barrel!")
+                        term.setTextColor(colors.white)
+                        got = true
+                        break
+                    end
                 end
             end
             if got then break end
+
+            -- Also check if crafter itself produced output (some setups output differently)
+            local ok3, cItems = pcall(function() return crafter.list() end)
+            if ok3 and cItems then
+                local stillFull = false
+                for _ in pairs(cItems) do stillFull = true; break end
+                if not stillFull and not crafterCleared then
+                    crafterCleared = true
+                    print("  Crafter cleared at "..t*0.5.."s (crafted!), waiting for hopper...")
+                end
+            end
+
+            -- If crafter cleared, give hopper more time to move items
+            if crafterCleared and t >= 4 then
+                -- Re-check barrel
+                local ok4, outItems2 = pcall(function() return output.list() end)
+                if ok4 and outItems2 then
+                    for _, itm in pairs(outItems2) do
+                        totalCrafted = totalCrafted + itm.count
+                        term.setTextColor(colors.lime)
+                        print("  ✓ Got "..itm.count.."x "..itm.name.." (after hopper delay)")
+                        term.setTextColor(colors.white)
+                        got = true
+                        break
+                    end
+                end
+                if got then break end
+            end
         end
 
         if not got then
-            print("  [WARN] No output after 5s — wrong RS side or recipe issue?")
+            print("  [WARN] No '"..job.itemId.."' in "..OUTPUT_NAME.." after 6s")
+            print("  Barrel contents:")
+            local ok5, outItems3 = pcall(function() return output.list() end)
+            if ok5 and outItems3 then
+                for _, itm in pairs(outItems3) do
+                    print("    "..itm.name.." x"..itm.count)
+                end
+            end
+            if crafterCleared then
+                print("  Crafter did fire but output went somewhere else?")
+                -- Still count as success if crafter processed
+                got = crafterCleared
+            end
         end
 
-        -- Flush barrel → vault
+        -- Flush barrel → vault regardless
         flushToVault(OUTPUT_NAME)
         sleep(0.1)
     end
@@ -443,27 +547,51 @@ function executeJob(job)
     if not recipe then
         return false, "no recipe for "..job.itemId
     end
-    print("  Recipe: "..recipe.type)
+    print("  Recipe type: "..recipe.type)
 
     local grid, mode = parseGrid(recipe)
     if not grid or mode == "unknown" then
         return false, "unsupported recipe type: "..recipe.type
     end
 
+    -- Figure out how many craft operations needed
+    -- Get result count per craft from recipe data
+    local resultCount = 1
+    if recipe.data then
+        local r = recipe.data.result
+        if type(r) == "table" and r.count then resultCount = r.count
+        elseif recipe.data.results and recipe.data.results[1] then
+            local r2 = recipe.data.results[1]
+            if type(r2) == "table" and r2.count then resultCount = r2.count end
+        end
+    end
+    if recipe.resultCount then resultCount = recipe.resultCount end  -- custom recipes
+
+    -- Calculate passes needed (ceil)
+    local passes = math.ceil(job.amount / resultCount)
+    print("  Result per craft: "..resultCount.." | Need "..passes.." passes for "..job.amount.."x")
+
     -- Show grid
     for row = 1, 3 do
         local line = "  "
         for col = 1, 3 do
             local v = grid[(row-1)*3+col]
-            line = line.."["..(v and (v:match(":(.+)") or v):sub(1,6) or "  --  ").."]"
+            line = line.."["..(v and (v:match(":(.+)") or v):sub(1,6) or "  -- ").."] "
         end
         print(line)
     end
 
+    -- Override job amount to actual passes
+    local jobForCraft = {
+        id     = job.id,
+        itemId = job.itemId,
+        amount = passes,
+    }
+
     if mode == "crafter" then
-        return runCrafterRecipe(job, grid)
+        return runCrafterRecipe(jobForCraft, grid)
     else
-        return runPressRecipe(job, grid)
+        return runPressRecipe(jobForCraft, grid)
     end
 end
 
