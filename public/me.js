@@ -12,29 +12,46 @@ let craftingQueue = [];
 // ══════════════════════════════════════════════════════════════════════════
 
 async function init() {
-    console.log('Initializing ME Terminal...');
-    
-    // Load craftable items
     await loadCraftableItems();
-    
-    // Start live inventory updates
-    startInventoryPolling();
-    
-    // Start queue polling
-    startQueuePolling();
-    
-    // Setup event listeners
+    await loadInventory();       // initial fetch
+    await loadQueue();           // initial fetch
     setupEventListeners();
+    connectSSE();                // live updates via SSE, no polling
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// SSE — replaces setInterval polling
+// ══════════════════════════════════════════════════════════════════════════
+
+function connectSSE() {
+    const es = new EventSource(`${API_URL}/api/events`);
+
+    // inventory update from ComputerCraft
+    es.addEventListener('inventory', async () => {
+        await loadInventory();
+    });
+
+    // queue changed
+    es.addEventListener('queue', e => {
+        craftingQueue = JSON.parse(e.data);
+        renderQueue();
+    });
+
+    es.onopen = () => {
+        updateStatus(document.getElementById('statusIndicator').classList.contains('online'),
+                     null);  // keep existing state
+    };
+    es.onerror = () => {
+        // SSE dropped — try to reconnect automatically (browser does this)
+        console.warn('SSE disconnected, reconnecting...');
+    };
 }
 
 function setupEventListeners() {
-    // Search
     document.getElementById('searchInput').addEventListener('input', (e) => {
         searchQuery = e.target.value.toLowerCase();
         renderInventory();
     });
-    
-    // Filters
     document.querySelectorAll('.filter-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
@@ -445,18 +462,8 @@ async function submitCraft(itemId) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Polling
+// Polling — REMOVED, replaced by SSE above
 // ══════════════════════════════════════════════════════════════════════════
-
-function startInventoryPolling() {
-    loadInventory();
-    setInterval(loadInventory, 2000); // Every 2 seconds
-}
-
-function startQueuePolling() {
-    loadQueue();
-    setInterval(loadQueue, 1000); // Every 1 second
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // Utilities

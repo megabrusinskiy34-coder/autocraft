@@ -1,360 +1,289 @@
 const express = require('express');
-const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
+const cors    = require('cors');
+const fs      = require('fs');
+const path    = require('path');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// ── Middleware ────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 app.use('/textures', express.static('output/textures'));
 
-// ── Load data ─────────────────────────────────────────────────────────────
-const recipesDB = JSON.parse(fs.readFileSync('./output/recipes_db.json', 'utf-8'));
+// ── Static data ───────────────────────────────────────────────────────────
+const recipesDB    = JSON.parse(fs.readFileSync('./output/recipes_db.json',    'utf-8'));
 const recipesIndex = JSON.parse(fs.readFileSync('./output/recipes_index.json', 'utf-8'));
 const itemTextures = JSON.parse(fs.readFileSync('./output/item_textures.json', 'utf-8'));
 
-console.log(`Loaded ${Object.keys(recipesDB).length} recipes`);
-console.log(`Loaded ${Object.keys(itemTextures).length} item textures`);
+// ── Persistent: custom recipes ────────────────────────────────────────────
+const CUSTOM_FILE = './custom_recipes.json';
+let customRecipes = {};
+try { if (fs.existsSync(CUSTOM_FILE)) customRecipes = JSON.parse(fs.readFileSync(CUSTOM_FILE, 'utf-8')); } catch {}
+const saveCustom = () => { try { fs.writeFileSync(CUSTOM_FILE, JSON.stringify(customRecipes, null, 2)); } catch {} };
 
-// ── API Endpoints ─────────────────────────────────────────────────────────
+// ── Persistent: craft log ─────────────────────────────────────────────────
+const LOG_FILE = './craft_log.json';
+let craftLog = [];
+try { if (fs.existsSync(LOG_FILE)) craftLog = JSON.parse(fs.readFileSync(LOG_FILE, 'utf-8')); } catch {}
+const saveLog = () => { try { fs.writeFileSync(LOG_FILE, JSON.stringify(craftLog.slice(-500), null, 2)); } catch {} };
 
-// GET /api/items - list all craftable items with textures
-app.get('/api/items', (req, res) => {
-  try {
-    const search = req.query.search?.toLowerCase() || '';
-    const namespace = req.query.namespace || '';
-    
-    // Build list of items from recipes (output items)
-    const items = new Set();
-    const itemData = [];
+// ── Live state ────────────────────────────────────────────────────────────
+let liveInventory      = null;
+let lastInventoryUpdate = null;
+let craftingQueue      = [];
+let queueIdCounter     = 1;
 
-    for (const [recipeId, recipe] of Object.entries(recipesDB)) {
-      try {
-        const data = recipe.data;
-        
-        // Extract result/output item
-        let resultItem = null;
-        
-        if (data.result) {
-          if (typeof data.result === 'string') {
-            resultItem = data.result;
-          } else if (data.result.item) {
-            resultItem = data.result.item;
-          } else if (data.result.id) {
-            resultItem = data.result.id;
-          }
-        } else if (data.results && Array.isArray(data.results) && data.results.length > 0) {
-          const first = data.results[0];
-          if (typeof first === 'string') {
-            resultItem = first;
-          } else if (first.item) {
-            resultItem = first.item;
-          } else if (first.id) {
-            resultItem = first.id;
-          }
-        }
+// ── SSE clients ───────────────────────────────────────────────────────────
+const sseClients = new Set();
+function broadcast(event, data) {
+  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  sseClients.forEach(res => { try { res.write(msg); } catch {} });
+}
 
-        if (resultItem && !items.has(resultItem)) {
-          items.add(resultItem);
-          
-          const itemNs = resultItem.split(':')[0] || 'minecraft';
-          const itemName = resultItem.split(':')[1] || resultItem;
-          
-          // Filter
-          if (namespace && itemNs !== namespace) continue;
-          if (search && !resultItem.toLowerCase().includes(search)) continue;
-
-          itemData.push({
-            id: resultItem,
-            name: itemName.replace(/_/g, ' '),
-            namespace: itemNs,
-            texture: itemTextures[resultItem] || null,
-            recipeTypes: [recipe.type],
-          });
-        }
-      } catch (err) {
-        // Skip invalid recipe
-        console.error(`Error processing recipe ${recipeId}:`, err.message);
-      }
-    }
-
-    // Sort alphabetically by id
-    itemData.sort((a, b) => a.id.localeCompare(b.id));
-
-    res.json({
-      total: itemData.length,
-      items: itemData, // no limit - send all craftable items
-    });
-  } catch (error) {
-    console.error('Error in /api/items:', error);
-    res.status(500).json({ error: 'Internal server error', message: error.message });
-  }
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+  res.write('retry: 1000\n\n');
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
 });
 
-// GET /api/recipes/:itemId - get all recipes for an item
-app.get('/api/recipes/:itemId', (req, res) => {
-  const itemId = req.params.itemId.replace('__', ':'); // create__brass_ingot -> create:brass_ingot
-  const recipes = [];
+console.log(`Loaded ${Object.keys(recipesDB).length} recipes, ${Object.keys(itemTextures).length} textures, ${Object.keys(customRecipes).length} custom`);
 
-  for (const [recipeId, recipe] of Object.entries(recipesDB)) {
+// ── Items ─────────────────────────────────────────────────────────────────
+app.get('/api/items', (req, res) => {
+  const search = (req.query.search || '').toLowerCase();
+  const ns     = req.query.namespace || '';
+  const items  = new Map();
+
+  // built-in recipes
+  for (const [, recipe] of Object.entries(recipesDB)) {
     const data = recipe.data;
-    
-    let resultItem = null;
-    if (data.result) {
-      resultItem = typeof data.result === 'string' ? data.result : (data.result.item || data.result.id);
-    } else if (data.results?.[0]) {
-      const r = data.results[0];
-      resultItem = typeof r === 'string' ? r : (r.item || r.id);
-    }
-
-    if (resultItem === itemId) {
-      recipes.push({
-        id: recipeId,
-        type: recipe.type,
-        namespace: recipe.namespace,
-        data: data,
-      });
-    }
+    let ri = null;
+    if (data.result)      ri = typeof data.result  === 'string' ? data.result  : (data.result.item  || data.result.id);
+    else if (data.results?.[0]) { const r = data.results[0]; ri = typeof r === 'string' ? r : (r.item || r.id); }
+    if (!ri) continue;
+    if (!items.has(ri)) items.set(ri, { id: ri, name: ri.split(':')[1]?.replace(/_/g,' ') || ri,
+      namespace: ri.split(':')[0] || 'minecraft', texture: itemTextures[ri] || null, recipeTypes: [] });
+    items.get(ri).recipeTypes.push(recipe.type);
+  }
+  // custom recipes
+  for (const [, cr] of Object.entries(customRecipes)) {
+    const ri = cr.resultItem;
+    if (!items.has(ri)) items.set(ri, { id: ri, name: ri.split(':')[1]?.replace(/_/g,' ') || ri,
+      namespace: ri.split(':')[0] || 'minecraft', texture: itemTextures[ri] || null, recipeTypes: [] });
+    if (!items.get(ri).recipeTypes.includes(cr.recipeType)) items.get(ri).recipeTypes.push(cr.recipeType);
   }
 
+  let out = [...items.values()];
+  if (ns)     out = out.filter(i => i.namespace === ns);
+  if (search) out = out.filter(i => i.id.toLowerCase().includes(search));
+  out.sort((a,b) => a.id.localeCompare(b.id));
+  res.json({ total: out.length, items: out });
+});
+
+// ── Recipes ───────────────────────────────────────────────────────────────
+app.get('/api/recipes/:itemId', (req, res) => {
+  const itemId  = req.params.itemId.replace(/__/g, ':');
+  const recipes = [];
+
+  for (const [id, recipe] of Object.entries(recipesDB)) {
+    const data = recipe.data;
+    let ri = null;
+    if (data.result) ri = typeof data.result === 'string' ? data.result : (data.result.item || data.result.id);
+    else if (data.results?.[0]) { const r = data.results[0]; ri = typeof r === 'string' ? r : (r.item || r.id); }
+    if (ri === itemId) recipes.push({ id, type: recipe.type, namespace: recipe.namespace, data });
+  }
+  for (const [id, cr] of Object.entries(customRecipes)) {
+    if (cr.resultItem === itemId)
+      recipes.push({ id, type: cr.recipeType, namespace: 'custom', data: cr.data, custom: true, grid: cr.grid, resultCount: cr.resultCount });
+  }
   res.json({ item: itemId, recipes });
 });
 
-// GET /api/recipe/:id - get full recipe by id
 app.get('/api/recipe/:id', (req, res) => {
-  const id = req.params.id;
-  const recipe = recipesDB[id];
-  if (recipe) {
-    res.json(recipe);
-  } else {
-    res.status(404).json({ error: 'Recipe not found' });
-  }
+  const r = recipesDB[req.params.id] || customRecipes[req.params.id];
+  r ? res.json(r) : res.status(404).json({ error: 'not found' });
 });
 
-// GET /api/search - search items/recipes
+// ── Search ────────────────────────────────────────────────────────────────
 app.get('/api/search', (req, res) => {
-  const query = req.query.q?.toLowerCase() || '';
-  if (!query) {
-    return res.json({ items: [], recipes: [] });
-  }
-
-  const items = [];
-  const recipes = [];
-
-  // Search in item IDs
-  for (const itemId of Object.keys(itemTextures)) {
-    if (itemId.toLowerCase().includes(query)) {
-      items.push({
-        id: itemId,
-        name: itemId.split(':')[1]?.replace(/_/g, ' ') || itemId,
-        texture: itemTextures[itemId],
-      });
-      if (items.length >= 50) break;
-    }
-  }
-
-  // Search in recipe IDs
-  for (const [recipeId, recipe] of Object.entries(recipesDB)) {
-    if (recipeId.toLowerCase().includes(query)) {
-      recipes.push({
-        id: recipeId,
-        type: recipe.type,
-        namespace: recipe.namespace,
-      });
-      if (recipes.length >= 50) break;
-    }
-  }
-
+  const q = (req.query.q || '').toLowerCase();
+  if (!q) return res.json({ items: [], recipes: [] });
+  const items = Object.keys(itemTextures).filter(id => id.includes(q)).slice(0,50)
+    .map(id => ({ id, name: id.split(':')[1]?.replace(/_/g,' ') || id, texture: itemTextures[id] }));
+  const recipes = Object.entries(recipesDB).filter(([id]) => id.includes(q)).slice(0,50)
+    .map(([id, r]) => ({ id, type: r.type, namespace: r.namespace }));
   res.json({ items, recipes });
 });
 
-// GET /api/stats - statistics
+// ── Stats ─────────────────────────────────────────────────────────────────
 app.get('/api/stats', (req, res) => {
   res.json({
     totalRecipes: Object.keys(recipesDB).length,
     totalItems: Object.keys(itemTextures).length,
+    customRecipes: Object.keys(customRecipes).length,
     recipeTypes: recipesIndex.by_type,
-    namespaces: recipesIndex.by_namespace,
+    namespaces:  recipesIndex.by_namespace,
   });
 });
 
-// POST /api/inventory - receive inventory from ComputerCraft ME terminal
-let liveInventory = null;
-let lastInventoryUpdate = null;
-let craftingQueue = [];
-let queueIdCounter = 1;
-
+// ── Inventory ─────────────────────────────────────────────────────────────
 app.post('/api/inventory', (req, res) => {
-  try {
-    const data = req.body;
-    
-    if (!data || !data.items) {
-      return res.status(400).json({ error: 'Invalid data' });
-    }
-    
-    // Store inventory
-    liveInventory = {
-      computerId: data.computerId,
-      timestamp: data.timestamp,
-      stats: data.stats,
-      items: data.items
-    };
-    lastInventoryUpdate = Date.now();
-    
-    console.log(`[INVENTORY] Updated from Computer #${data.computerId}: ${data.items.length} unique items, ${data.stats.totalItems} total`);
-    
-    res.json({ ok: true, received: data.items.length });
-  } catch (error) {
-    console.error('Error in /api/inventory:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const data = req.body;
+  if (!data?.items) return res.status(400).json({ error: 'invalid' });
+  liveInventory      = { computerId: data.computerId, timestamp: data.timestamp, stats: data.stats, items: data.items };
+  lastInventoryUpdate = Date.now();
+  broadcast('inventory', { stats: data.stats, itemCount: data.items.length });
+  res.json({ ok: true });
 });
 
-// GET /api/inventory - get live inventory from ComputerCraft
 app.get('/api/inventory', (req, res) => {
-  if (!liveInventory) {
-    return res.json({
-      online: false,
-      message: 'No inventory data available. Run me_terminal.lua in ComputerCraft.'
-    });
-  }
-  
+  if (!liveInventory) return res.json({ online: false, message: 'Run me_terminal.lua' });
   const age = Date.now() - lastInventoryUpdate;
-  const isOnline = age < 10000; // Online if updated in last 10 seconds
-  
-  res.json({
-    online: isOnline,
-    age: age,
-    lastUpdate: new Date(lastInventoryUpdate).toISOString(),
-    ...liveInventory
-  });
+  res.json({ online: age < 10000, age, lastUpdate: new Date(lastInventoryUpdate).toISOString(), ...liveInventory });
 });
 
-// POST /api/craft - request crafting from web interface
+// ── Craft queue ───────────────────────────────────────────────────────────
 app.post('/api/craft', (req, res) => {
-  try {
-    const { itemId, amount } = req.body;
-    
-    if (!itemId || !amount) {
-      return res.status(400).json({ success: false, message: 'Missing itemId or amount' });
-    }
-    
-    // Create craft job
-    const job = {
-      id: queueIdCounter++,
-      itemId: itemId,
-      amount: amount,
-      status: 'pending', // pending, crafting, completed, failed
-      createdAt: Date.now()
-    };
-    
-    craftingQueue.push(job);
-    
-    console.log(`[CRAFT] New job #${job.id}: ${amount}x ${itemId}`);
-    
-    res.json({ success: true, jobId: job.id, message: 'Craft job queued' });
-  } catch (error) {
-    console.error('Error in /api/craft:', error);
-    res.status(500).json({ success: false, message: 'Internal server error' });
-  }
+  const { itemId, amount } = req.body;
+  if (!itemId || !amount) return res.status(400).json({ success: false, message: 'missing fields' });
+  const job = { id: queueIdCounter++, itemId, amount, status: 'pending', createdAt: Date.now() };
+  craftingQueue.push(job);
+  broadcast('queue', craftingQueue);
+  console.log(`[CRAFT] queued #${job.id}: ${amount}x ${itemId}`);
+  res.json({ success: true, jobId: job.id });
 });
 
-// GET /api/queue - get crafting queue
-app.get('/api/queue', (req, res) => {
-  res.json({
-    queue: craftingQueue,
-    total: craftingQueue.length
-  });
-});
+app.get('/api/queue', (req, res) => res.json({ queue: craftingQueue, total: craftingQueue.length }));
 
-// GET /api/queue/next - get next pending job (for ComputerCraft)
 app.get('/api/queue/next', (req, res) => {
-  const nextJob = craftingQueue.find(job => job.status === 'pending');
-  
-  if (nextJob) {
-    nextJob.status = 'crafting';
-    nextJob.startedAt = Date.now();
-    res.json({ job: nextJob });
-  } else {
-    res.json({ job: null });
-  }
+  const job = craftingQueue.find(j => j.status === 'pending');
+  if (job) { job.status = 'crafting'; job.startedAt = Date.now(); broadcast('queue', craftingQueue); }
+  res.json({ job: job || null });
 });
 
-// POST /api/queue/:id/complete - mark job as completed
 app.post('/api/queue/:id/complete', (req, res) => {
-  const jobId = parseInt(req.params.id);
-  const job = craftingQueue.find(j => j.id === jobId);
-  
-  if (job) {
-    job.status = 'completed';
-    job.completedAt = Date.now();
-    console.log(`[CRAFT] Job #${jobId} completed`);
-    
-    // Remove completed jobs after 5 seconds
-    setTimeout(() => {
-      const index = craftingQueue.findIndex(j => j.id === jobId);
-      if (index !== -1) craftingQueue.splice(index, 1);
-    }, 5000);
-    
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ success: false, message: 'Job not found' });
-  }
+  const job = craftingQueue.find(j => j.id === +req.params.id);
+  if (!job) return res.status(404).json({ success: false });
+  job.status = 'completed'; job.completedAt = Date.now();
+  // log it
+  craftLog.push({ jobId: job.id, itemId: job.itemId, amount: job.amount,
+    status: 'completed', startedAt: job.startedAt, completedAt: job.completedAt,
+    durationMs: job.completedAt - (job.startedAt || job.createdAt) });
+  saveLog();
+  broadcast('queue', craftingQueue);
+  broadcast('log', craftLog.slice(-50));
+  console.log(`[CRAFT] #${job.id} completed`);
+  setTimeout(() => { craftingQueue = craftingQueue.filter(j => j.id !== job.id); broadcast('queue', craftingQueue); }, 5000);
+  res.json({ success: true });
 });
 
-// POST /api/queue/:id/fail - mark job as failed
 app.post('/api/queue/:id/fail', (req, res) => {
-  const jobId = parseInt(req.params.id);
-  const job = craftingQueue.find(j => j.id === jobId);
-  
-  if (job) {
-    job.status = 'failed';
-    job.failedAt = Date.now();
-    job.error = req.body.error || 'Unknown error';
-    console.log(`[CRAFT] Job #${jobId} failed: ${job.error}`);
-    
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ success: false, message: 'Job not found' });
-  }
+  const job = craftingQueue.find(j => j.id === +req.params.id);
+  if (!job) return res.status(404).json({ success: false });
+  job.status = 'failed'; job.failedAt = Date.now(); job.error = req.body.error || 'unknown';
+  craftLog.push({ jobId: job.id, itemId: job.itemId, amount: job.amount,
+    status: 'failed', error: job.error, failedAt: job.failedAt });
+  saveLog();
+  broadcast('queue', craftingQueue);
+  broadcast('log', craftLog.slice(-50));
+  console.log(`[CRAFT] #${job.id} failed: ${job.error}`);
+  res.json({ success: true });
 });
 
-// POST /api/queue/:id/cancel - cancel pending job
 app.post('/api/queue/:id/cancel', (req, res) => {
-  const jobId = parseInt(req.params.id);
-  const index = craftingQueue.findIndex(j => j.id === jobId);
-  
-  if (index !== -1) {
-    const job = craftingQueue[index];
-    
-    if (job.status === 'pending') {
-      craftingQueue.splice(index, 1);
-      console.log(`[CRAFT] Job #${jobId} cancelled by user`);
-      res.json({ success: true });
-    } else {
-      res.json({ success: false, message: 'Can only cancel pending jobs' });
-    }
-  } else {
-    res.status(404).json({ success: false, message: 'Job not found' });
-  }
+  const idx = craftingQueue.findIndex(j => j.id === +req.params.id && j.status === 'pending');
+  if (idx === -1) return res.json({ success: false, message: 'not found or not pending' });
+  const [job] = craftingQueue.splice(idx, 1);
+  craftLog.push({ jobId: job.id, itemId: job.itemId, amount: job.amount, status: 'cancelled', cancelledAt: Date.now() });
+  saveLog();
+  broadcast('queue', craftingQueue);
+  res.json({ success: true });
 });
 
-// ── Start server ──────────────────────────────────────────────────────────
+// ── Craft log ─────────────────────────────────────────────────────────────
+app.get('/api/log', (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  res.json({ log: craftLog.slice(-limit).reverse(), total: craftLog.length });
+});
+
+app.delete('/api/log', (req, res) => {
+  craftLog = [];
+  saveLog();
+  broadcast('log', []);
+  res.json({ success: true });
+});
+
+// ── Custom recipes ────────────────────────────────────────────────────────
+app.get('/api/custom-recipes', (req, res) => {
+  res.json({ total: Object.keys(customRecipes).length, recipes: Object.values(customRecipes) });
+});
+
+app.post('/api/custom-recipes', (req, res) => {
+  const { resultItem, resultCount, recipeType, grid, name } = req.body;
+  if (!resultItem || !recipeType || !grid || grid.length !== 9)
+    return res.status(400).json({ success: false, message: 'invalid body' });
+
+  const id = `custom:${resultItem.replace(':','__')}_${Date.now()}`;
+  const recipe = {
+    id, name: name || resultItem.split(':')[1] || resultItem,
+    resultItem, resultCount: resultCount || 1,
+    recipeType, grid,
+    createdAt: Date.now(),
+    data: buildRecipeData(resultItem, resultCount || 1, recipeType, grid),
+  };
+  customRecipes[id] = recipe;
+  saveCustom();
+  broadcast('customRecipes', Object.values(customRecipes));
+  console.log(`[CUSTOM] created ${id}`);
+  res.json({ success: true, id, recipe });
+});
+
+app.delete('/api/custom-recipes/:id', (req, res) => {
+  const id = decodeURIComponent(req.params.id);
+  if (!customRecipes[id]) return res.status(404).json({ success: false });
+  delete customRecipes[id];
+  saveCustom();
+  broadcast('customRecipes', Object.values(customRecipes));
+  res.json({ success: true });
+});
+
+function buildRecipeData(resultItem, resultCount, recipeType, grid) {
+  if (recipeType === 'minecraft:crafting_shaped' || recipeType === 'create:mechanical_crafting') {
+    const key = {}, charMap = {};
+    const chars = 'ABCDEFGHI';
+    let ci = 0;
+    const pattern = [];
+    for (let row = 0; row < 3; row++) {
+      let r = '';
+      for (let col = 0; col < 3; col++) {
+        const slot = grid[row * 3 + col];
+        if (!slot) { r += ' '; continue; }
+        if (!charMap[slot]) {
+          charMap[slot] = chars[ci++];
+          key[charMap[slot]] = slot.startsWith('#') ? { tag: slot.slice(1) } : { item: slot };
+        }
+        r += charMap[slot];
+      }
+      pattern.push(r);
+    }
+    while (pattern.length && !pattern[0].trim())            pattern.shift();
+    while (pattern.length && !pattern[pattern.length-1].trim()) pattern.pop();
+    return { pattern, key, result: { item: resultItem, count: resultCount } };
+  }
+  const ing = grid[4] || grid.find(s => s);
+  const ingredient = !ing ? { item: 'minecraft:air' } : ing.startsWith('#') ? { tag: ing.slice(1) } : { item: ing };
+  return { ingredients: [ingredient], results: [{ item: resultItem, count: resultCount }] };
+}
+
+// ── Start ─────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`\n🚀 Create AutoCraft API running on http://localhost:${PORT}`);
-  console.log(`📊 API endpoints:`);
-  console.log(`   GET  /api/items?search=brass&namespace=create`);
-  console.log(`   GET  /api/recipes/:itemId`);
-  console.log(`   GET  /api/search?q=gear`);
-  console.log(`   GET  /api/stats`);
-  console.log(`   GET  /api/inventory (live from ComputerCraft)`);
-  console.log(`   POST /api/inventory (from me_terminal.lua)`);
-  console.log(`   POST /api/craft (request crafting)`);
-  console.log(`   GET  /api/queue (get crafting queue)`);
-  console.log(`   GET  /api/queue/next (for ComputerCraft autocrafter)`);
-  console.log(`\n🌐 ME Terminal: http://localhost:${PORT}/me.html\n`);
+  console.log(`\n🚀 AutoCraft API on http://localhost:${PORT}`);
+  console.log(`   ME Terminal:    /me.html`);
+  console.log(`   Craft Manager:  /crafts.html\n`);
 });

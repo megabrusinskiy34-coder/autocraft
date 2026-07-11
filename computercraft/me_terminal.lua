@@ -1,1287 +1,620 @@
 -- ══════════════════════════════════════════════════════════════════════════
--- ME Terminal Bridge - Sends inventory to web API in real-time
--- Shows all items on website like Applied Energistics ME Terminal
+-- ME Terminal Bridge v3.0  (event-loop, no sleep polling)
+--
+-- Hardware:
+--   Storage:          item_vault_5 / 6 / 7
+--   Buffer chest:     chest_4
+--   Vanilla crafter:  left  (minecraft:crafter)
+--   Redstone side:    REDSTONE_SIDE  → triggers crafter
+--   Output barrel:    barrel_1  (hopper below crafter)
+--   Press depots:     depot_5 / 6 / 7
 -- ══════════════════════════════════════════════════════════════════════════
 
 local API_URL = "https://web-production-bf6e3.up.railway.app"
-local UPDATE_INTERVAL = 2  -- seconds between updates
 
--- HTTP headers for Railway bypass
-local HTTP_HEADERS = {
-    ["Content-Type"] = "application/json",
-    ["bypass-tunnel-reminder"] = "true",
-    ["ngrok-skip-browser-warning"] = "true"
+local HEADERS = {
+    ["Content-Type"]               = "application/json",
+    ["bypass-tunnel-reminder"]     = "true",
+    ["ngrok-skip-browser-warning"] = "true",
 }
 
+local CRAFTER_NAME   = "left"
+local BUFFER_NAME    = "chest_4"
+local OUTPUT_NAME    = "barrel_1"
+local REDSTONE_SIDE  = "right"   -- change if needed
+local PRESS_DEPOTS   = {"depot_5","depot_6","depot_7"}
+local VAULT_NAMES    = {"item_vault_5","item_vault_6","item_vault_7"}
+local SYNC_INTERVAL  = 2   -- seconds between inventory pushes
+
+-- Devices excluded from storage scan
+local EXCLUDED = {
+    [CRAFTER_NAME] = true,
+    [BUFFER_NAME]  = true,
+    [OUTPUT_NAME]  = true,
+}
+for _, d in ipairs(PRESS_DEPOTS) do EXCLUDED[d] = true end
+
+
 -- ══════════════════════════════════════════════════════════════════════════
--- Inventory Scanner
+-- Storage helpers
 -- ══════════════════════════════════════════════════════════════════════════
 
 function findAllStorage()
-    local devices = {}
-    local seen = {}  -- Track already added devices to avoid duplicates
-    
+    local devices, seen = {}, {}
     for _, name in ipairs(peripheral.getNames()) do
-        -- Skip if already added
-        if not seen[name] then
-            local ptype = peripheral.getType(name)
-            
-            -- Find all storage BUT exclude depots (they are for crafting, not storage)
-            if (ptype == "inventory" or 
-               ptype:find("chest") or 
-               ptype:find("vault") or 
-               ptype:find("barrel")) and
-               not name:match("depot") then  -- EXCLUDE DEPOTS!
-                
-                table.insert(devices, {
-                    name = name,
-                    type = ptype,
-                    peripheral = peripheral.wrap(name)
-                })
-                seen[name] = true
+        if not seen[name] and not EXCLUDED[name] and not name:match("^depot_") then
+            local pt = peripheral.getType(name)
+            if pt and (pt:find("vault") or pt:find("chest") or
+                       pt:find("barrel") or pt == "inventory") then
+                local p = peripheral.wrap(name)
+                if p and p.list then
+                    table.insert(devices, {name=name, type=pt, p=p})
+                    seen[name] = true
+                end
             end
         end
     end
     return devices
 end
 
-function scanAllInventory()
-    local devices = findAllStorage()
-    local inventory = {}  -- { itemId -> { count, locations[] } }
-    local totalItems = 0
-    local totalStacks = 0
-    
-    for _, device in ipairs(devices) do
-        if device.peripheral and device.peripheral.list then
-            local items = device.peripheral.list()
-            
+function scanInventory()
+    local inv = {}
+    local totalItems, totalStacks = 0, 0
+    local devs = findAllStorage()
+    for _, d in ipairs(devs) do
+        local ok, items = pcall(function() return d.p.list() end)
+        if ok and items then
             for slot, item in pairs(items) do
-                local itemId = item.name
-                
-                -- Initialize item entry
-                if not inventory[itemId] then
-                    inventory[itemId] = {
-                        id = itemId,
-                        name = itemId:match(":(.+)") or itemId,
-                        namespace = itemId:match("^(.+):") or "minecraft",
-                        totalCount = 0,
-                        locations = {}
-                    }
+                local id = item.name
+                if not inv[id] then
+                    inv[id] = { id=id,
+                        name      = id:match(":(.+)") or id,
+                        namespace = id:match("^(.+):") or "minecraft",
+                        totalCount=0, locations={} }
                 end
-                
-                -- Add to total
-                inventory[itemId].totalCount = inventory[itemId].totalCount + item.count
-                
-                -- Add location
-                table.insert(inventory[itemId].locations, {
-                    device = device.name,
-                    slot = slot,
-                    count = item.count
-                })
-                
-                totalItems = totalItems + item.count
+                inv[id].totalCount = inv[id].totalCount + item.count
+                table.insert(inv[id].locations, {device=d.name, slot=slot, count=item.count})
+                totalItems  = totalItems  + item.count
                 totalStacks = totalStacks + 1
             end
         end
     end
-    
-    return inventory, {
-        totalItems = totalItems,
-        totalStacks = totalStacks,
-        storageDevices = #devices
-    }
+    return inv, {totalItems=totalItems, totalStacks=totalStacks, storageDevices=#devs}
 end
 
 -- ══════════════════════════════════════════════════════════════════════════
--- API Communication
+-- HTTP helpers
 -- ══════════════════════════════════════════════════════════════════════════
 
-function sendInventoryToAPI(inventory, stats)
-    -- Convert inventory map to array
+function httpGet(path)
+    local ok, r = pcall(http.get, API_URL..path, HEADERS)
+    if not ok or not r then return nil end
+    local body = r.readAll(); r.close()
+    return textutils.unserialiseJSON(body)
+end
+
+function httpPost(path, data)
+    local body = type(data) == "string" and data or textutils.serialiseJSON(data)
+    local ok, r = pcall(http.post, API_URL..path, body, HEADERS)
+    if ok and r then local b = r.readAll(); r.close(); return textutils.unserialiseJSON(b) end
+    return nil
+end
+
+function pushInventory(inv, stats)
     local items = {}
-    for itemId, data in pairs(inventory) do
-        table.insert(items, {
-            id = data.id,
-            name = data.name,
-            namespace = data.namespace,
-            count = data.totalCount,
-            locations = #data.locations
-        })
+    for _, d in pairs(inv) do
+        table.insert(items, {id=d.id, name=d.name, namespace=d.namespace,
+                             count=d.totalCount, locations=#d.locations})
     end
-    
-    -- Sort by count (descending)
-    table.sort(items, function(a, b)
-        return a.count > b.count
-    end)
-    
-    -- Debug: log coal count if exists
-    for _, item in ipairs(items) do
-        if item.id == "minecraft:coal" then
-            print("[DEBUG] Sending coal count: " .. item.count)
+    table.sort(items, function(a,b) return a.count > b.count end)
+    httpPost("/api/inventory", {
+        computerId = os.getComputerID(),
+        timestamp  = os.epoch("utc"),
+        stats      = stats,
+        items      = items
+    })
+end
+
+function getNextJob()
+    local d = httpGet("/api/queue/next")
+    return d and d.job
+end
+
+function reportDone(id, ok, err)
+    local ep = ok and "/api/queue/"..id.."/complete" or "/api/queue/"..id.."/fail"
+    httpPost(ep, ok and {} or {error=err or "unknown"})
+end
+
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Recipe fetching + parsing
+-- ══════════════════════════════════════════════════════════════════════════
+
+function getRecipe(itemId)
+    local d = httpGet("/api/recipes/"..itemId:gsub(":", "__"))
+    if d and d.recipes and #d.recipes > 0 then return d.recipes[1] end
+    return nil
+end
+
+local function extractIng(ing)
+    if type(ing) == "string" then return ing end
+    if type(ing) ~= "table"  then return nil end
+    if ing.item then return ing.item end
+    if ing.tag  then return "#"..ing.tag end
+    if ing[1]   then return extractIng(ing[1]) end
+    return nil
+end
+
+-- Returns grid[1..9], mode ("crafter"|"press")
+function parseGrid(recipe)
+    local t    = recipe.type
+    local data = recipe.data or {}
+
+    if t == "minecraft:crafting_shaped" or t == "create:mechanical_crafting" then
+        local pat = data.pattern or {}
+        local key = data.key     or {}
+        local grid = {}
+        for row = 1, 3 do
+            for col = 1, 3 do
+                local idx = (row-1)*3+col
+                local ch  = pat[row] and pat[row]:sub(col,col) or " "
+                if ch ~= " " and key[ch] then grid[idx] = extractIng(key[ch]) end
+            end
+        end
+        return grid, "crafter"
+
+    elseif recipe.custom then          -- custom recipe stored on server
+        local raw  = recipe.grid or {}
+        local grid = {}
+        for i = 1, 9 do
+            local v = raw[i]
+            grid[i] = (v ~= nil and v ~= "") and v or nil
+        end
+        return grid, "crafter"
+
+    elseif t == "create:pressing" or t == "create:cutting"
+        or t == "create:milling" or t == "create:crushing"
+        or t == "create:sandpaper_polishing" or t == "create:deploying" then
+        local ings = data.ingredients or {}
+        local grid = {}; grid[5] = extractIng(ings[1] or ings)
+        return grid, "press"
+    end
+
+    return nil, "unknown"
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Item search  (tag resolution + priority)
+-- ══════════════════════════════════════════════════════════════════════════
+
+function findItem(itemId)
+    local isTag = itemId:sub(1,1) == "#"
+    local tag   = isTag and itemId:sub(2) or nil
+    local best  = nil
+
+    for _, dev in ipairs(findAllStorage()) do
+        local ok, items = pcall(function() return dev.p.list() end)
+        if ok and items then
+            for slot, item in pairs(items) do
+                if not isTag then
+                    if item.name == itemId then return dev.name, slot, item.count end
+                else
+                    local sim  = tag:gsub("^c:",""):gsub("^forge:","")
+                    local base = sim:match("([^/]+)$") or sim
+                    local pats = {base}
+                    if sim:match("^ingots/")  then pats={base.."_ingot"}
+                    elseif sim:match("^plates/") or sim:match("^sheets/") then pats={base.."_plate",base.."_sheet"}
+                    elseif sim:match("^nuggets/") then pats={base.."_nugget"}
+                    elseif sim:match("^dusts/")   then pats={base.."_dust"}
+                    elseif sim:match("^gears/")   then pats={base.."_gear"}
+                    elseif sim:match("^rods/")    then pats={base.."_rod"} end
+                    local ibase = item.name:match(":(.+)") or item.name
+                    for _, pat in ipairs(pats) do
+                        if ibase == pat or ibase:match(pat.."$") then
+                            local prio = item.name:match("^minecraft:") and 1
+                                      or item.name:match("^create:")    and 2 or 10
+                            if not best or prio < best.prio then
+                                best = {storage=dev.name, slot=slot, count=item.count, prio=prio}
+                            end
+                            break
+                        end
+                    end
+                end
+            end
         end
     end
-    
-    -- Prepare payload
-    local payload = {
-        computerId = os.getComputerID(),
-        timestamp = os.epoch("utc"),
-        stats = stats,
-        items = items
-    }
-    
-    local jsonData = textutils.serialiseJSON(payload)
-    
-    -- Send to API
-    local success, response = pcall(function()
-        return http.post(
-            API_URL .. "/api/inventory",
-            jsonData,
-            HTTP_HEADERS
-        )
-    end)
-    
-    if success and response then
-        local responseData = response.readAll()
-        response.close()
-        return true, responseData
+    if best then return best.storage, best.slot, best.count end
+    return nil
+end
+
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Transfer helpers  (via buffer chest — the only reliable method)
+-- ══════════════════════════════════════════════════════════════════════════
+
+function moveViaBuffer(srcName, srcSlot, qty, targetName, targetSlot)
+    local buf = peripheral.wrap(BUFFER_NAME)
+    if not buf then return false, "no buffer" end
+
+    local short = srcName:match("item_vault_%d+")
+               or srcName:match("chest_%d+")
+               or srcName:match("([^:]+)$") or srcName
+
+    -- vault → buffer
+    local ok, n = pcall(function() return buf.pullItems(short,   srcSlot, qty) end)
+    if not ok or not n or n==0 then
+        ok, n = pcall(function() return buf.pullItems(srcName, srcSlot, qty) end)
+    end
+    if not ok or not n or n==0 then return false, "vault→buffer failed" end
+
+    sleep(0.05)
+    local bs = nil
+    for s in pairs(buf.list()) do bs = s; break end
+    if not bs then return false, "item lost in buffer" end
+
+    -- buffer → target
+    local ok2, n2
+    if targetSlot then
+        ok2,n2 = pcall(function() return buf.pushItems(targetName, bs, n, targetSlot) end)
     else
-        return false, "Connection failed"
+        ok2,n2 = pcall(function() return buf.pushItems(targetName, bs, n) end)
+    end
+    if not ok2 or not n2 or n2==0 then return false, "buffer→target failed" end
+    return true, n2
+end
+
+function flushToVault(periphName)
+    local p = peripheral.wrap(periphName)
+    if not p or not p.list then return end
+    local buf = peripheral.wrap(BUFFER_NAME)
+    if not buf then return end
+    local pShort = periphName:match("depot_%d+")
+                or periphName:match("barrel_%d+")
+                or periphName:match("([^:]+)$") or periphName
+    for slot, item in pairs(p.list()) do
+        local ok,n = pcall(function() return buf.pullItems(pShort, slot, item.count) end)
+        if ok and n and n>0 then
+            sleep(0.05)
+            for bs in pairs(buf.list()) do
+                for _, vn in ipairs(VAULT_NAMES) do
+                    local vault = peripheral.wrap(vn)
+                    if vault then
+                        pcall(function() vault.pullItems(BUFFER_NAME, bs, n) end)
+                    end
+                end
+                break
+            end
+        end
+        sleep(0.05)
     end
 end
+
+function clearCrafter()
+    local cr = peripheral.wrap(CRAFTER_NAME)
+    if not cr then return end
+    for slot in pairs(cr.list()) do
+        pcall(function() cr.pushItems(BUFFER_NAME, slot, 64) end)
+        sleep(0.05)
+        local buf = peripheral.wrap(BUFFER_NAME)
+        if buf then
+            for bs in pairs(buf.list()) do
+                for _, vn in ipairs(VAULT_NAMES) do
+                    local v = peripheral.wrap(vn)
+                    if v then pcall(function() v.pullItems(BUFFER_NAME, bs, 64) end) end
+                end
+                break
+            end
+        end
+    end
+end
+
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Crafting execution
+-- ══════════════════════════════════════════════════════════════════════════
+
+function runCrafterRecipe(job, grid)
+    local crafter = peripheral.wrap(CRAFTER_NAME)
+    if not crafter then return false, "crafter not found" end
+    local output = peripheral.wrap(OUTPUT_NAME)
+    if not output then return false, "output barrel not found" end
+
+    local totalCrafted = 0
+
+    for pass = 1, job.amount do
+        term.setTextColor(colors.yellow)
+        print("  Pass "..pass.."/"..job.amount)
+        term.setTextColor(colors.white)
+
+        clearCrafter()
+
+        -- Fill slots 1-9
+        for slotIdx = 1, 9 do
+            if grid[slotIdx] then
+                local itemId = grid[slotIdx]
+                local src, srcSlot, avail = findItem(itemId)
+                if not src then
+                    return false, "missing: "..itemId
+                end
+                print("    ["..slotIdx.."] "..itemId:match(":(.+)").." <- "..src)
+                local ok, n = moveViaBuffer(src, srcSlot, 1, CRAFTER_NAME, slotIdx)
+                if not ok then return false, "slot "..slotIdx.." failed: "..(n or "?") end
+                sleep(0.1)
+            end
+        end
+
+        -- Redstone pulse → crafter fires
+        print("  Redstone pulse ("..REDSTONE_SIDE..")...")
+        redstone.setOutput(REDSTONE_SIDE, true)
+        sleep(0.4)
+        redstone.setOutput(REDSTONE_SIDE, false)
+
+        -- Wait up to 5s for result in barrel_1
+        local got = false
+        for t = 1, 10 do
+            sleep(0.5)
+            for _, itm in pairs(output.list()) do
+                if itm.name == job.itemId then
+                    totalCrafted = totalCrafted + itm.count
+                    term.setTextColor(colors.lime)
+                    print("  Got "..itm.count.."x "..itm.name)
+                    term.setTextColor(colors.white)
+                    got = true; break
+                end
+            end
+            if got then break end
+        end
+
+        if not got then
+            print("  [WARN] No output after 5s — wrong RS side or recipe issue?")
+        end
+
+        -- Flush barrel → vault
+        flushToVault(OUTPUT_NAME)
+        sleep(0.1)
+    end
+
+    print("  Total crafted: "..totalCrafted.."x "..job.itemId)
+    return true
+end
+
+function runPressRecipe(job, grid)
+    local itemId = grid[5]
+    if not itemId then return false, "no ingredient" end
+
+    -- Find a free press depot
+    local depotName = nil
+    for _, dn in ipairs(PRESS_DEPOTS) do
+        local p = peripheral.wrap(dn)
+        if p and p.list then
+            local empty = true
+            for _ in pairs(p.list()) do empty=false; break end
+            if empty then depotName=dn; break end
+        end
+    end
+    if not depotName then return false, "no free press depot" end
+
+    print("  Depot: "..depotName)
+
+    for pass = 1, job.amount do
+        print("  Pass "..pass.."/"..job.amount)
+        local src, srcSlot = findItem(itemId)
+        if not src then return false, "missing: "..itemId end
+
+        local ok, n = moveViaBuffer(src, srcSlot, 1, depotName)
+        if not ok then return false, "transfer failed: "..(n or "?") end
+
+        -- Wait for press to process
+        local depot = peripheral.wrap(depotName)
+        local done  = false
+        for t = 1, 20 do
+            sleep(0.5)
+            if depot and depot.list then
+                for _, itm in pairs(depot.list()) do
+                    if itm.name == job.itemId then
+                        term.setTextColor(colors.lime)
+                        print("  Got "..itm.count.."x "..itm.name)
+                        term.setTextColor(colors.white)
+                        done=true; break
+                    end
+                end
+            end
+            if done then break end
+        end
+
+        flushToVault(depotName)
+        sleep(0.1)
+    end
+
+    return true
+end
+
+function executeJob(job)
+    term.setTextColor(colors.cyan)
+    print("\n>>> JOB #"..job.id.." — "..job.amount.."x "..job.itemId)
+    term.setTextColor(colors.white)
+
+    local recipe = getRecipe(job.itemId)
+    if not recipe then
+        return false, "no recipe for "..job.itemId
+    end
+    print("  Recipe: "..recipe.type)
+
+    local grid, mode = parseGrid(recipe)
+    if not grid or mode == "unknown" then
+        return false, "unsupported recipe type: "..recipe.type
+    end
+
+    -- Show grid
+    for row = 1, 3 do
+        local line = "  "
+        for col = 1, 3 do
+            local v = grid[(row-1)*3+col]
+            line = line.."["..(v and (v:match(":(.+)") or v):sub(1,6) or "  --  ").."]"
+        end
+        print(line)
+    end
+
+    if mode == "crafter" then
+        return runCrafterRecipe(job, grid)
+    else
+        return runPressRecipe(job, grid)
+    end
+end
+
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Display
 -- ══════════════════════════════════════════════════════════════════════════
 
-function drawHeader()
+local lastStats = {totalItems=0, totalStacks=0, storageDevices=0}
+local lastOnline = false
+local craftCount = 0
+
+function redraw()
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setCursorPos(1,1)
+
+    -- Header bar
     term.setBackgroundColor(colors.gray)
     term.setTextColor(colors.white)
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("  ME TERMINAL BRIDGE - LIVE SYNC  ")
+    term.clearLine()
+    term.write("  ME TERMINAL v3.0 — EVENT LOOP  ")
     term.setBackgroundColor(colors.black)
-end
 
-function drawStats(stats, lastUpdate, success)
-    term.setCursorPos(1, 3)
-    term.setTextColor(colors.lime)
-    print("Storage Devices: " .. stats.storageDevices)
-    
+    term.setCursorPos(1,3)
     term.setTextColor(colors.yellow)
-    print("Total Stacks: " .. stats.totalStacks)
-    
+    print("Storage : "..lastStats.storageDevices.." devices")
     term.setTextColor(colors.cyan)
-    print("Total Items: " .. stats.totalItems)
-    
-    term.setCursorPos(1, 7)
-    term.setTextColor(colors.white)
-    print("Last Update: " .. lastUpdate)
-    
-    if success then
+    print("Items   : "..lastStats.totalItems.." total  |  "..lastStats.totalStacks.." stacks")
+
+    term.setCursorPos(1,6)
+    if lastOnline then
         term.setTextColor(colors.lime)
-        print("Status: ONLINE")
+        print("API     : ONLINE")
     else
         term.setTextColor(colors.red)
-        print("Status: OFFLINE")
+        print("API     : OFFLINE")
     end
-    
-    term.setCursorPos(1, 10)
+
+    term.setTextColor(colors.white)
+    term.setCursorPos(1,8)
+    print("Crafted : "..craftCount.." jobs done")
+
+    term.setCursorPos(1,10)
     term.setTextColor(colors.gray)
-    print("View on website:")
-    term.setTextColor(colors.lightBlue)
     print(API_URL)
-    
-    term.setCursorPos(1, 13)
-    term.setTextColor(colors.white)
-    print("Press Ctrl+T to stop")
-end
+    term.setCursorPos(1,11)
+    term.setTextColor(colors.lightBlue)
+    print(API_URL.."/crafts.html")
 
-function drawTopItems(inventory)
-    term.setCursorPos(1, 15)
-    term.setTextColor(colors.yellow)
-    print("Top Items:")
-    
-    -- Convert to sorted array
-    local items = {}
-    for _, data in pairs(inventory) do
-        table.insert(items, data)
-    end
-    table.sort(items, function(a, b)
-        return a.totalCount > b.totalCount
-    end)
-    
+    term.setCursorPos(1,13)
     term.setTextColor(colors.white)
-    for i = 1, math.min(5, #items) do
-        local item = items[i]
-        local name = item.name:sub(1, 20)
-        print(string.format("  %s: %d", name, item.totalCount))
-    end
+    print("Ctrl+T to stop")
 end
 
 -- ══════════════════════════════════════════════════════════════════════════
--- Main Loop
+-- Event loop  (parallel tasks)
 -- ══════════════════════════════════════════════════════════════════════════
 
-function main()
-    drawHeader()
-    
-    term.setCursorPos(1, 3)
-    print("Initializing...")
-    print("Scanning storage devices...")
-    
-    local devices = findAllStorage()
-    print("Found " .. #devices .. " storage devices")
-    
-    if #devices == 0 then
-        term.setTextColor(colors.red)
-        print("\nERROR: No storage devices found!")
-        print("Connect item_vault, chest, or depot")
-        return
-    end
-    
-    sleep(2)
-    
-    local lastUpdate = "Never"
-    local lastSuccess = false
-    local updateCounter = 0
-    
+-- Task 1: inventory sync — fires on timer, no sleep polling
+function taskInventorySync()
+    -- send immediately on start
+    local inv, stats = scanInventory()
+    lastOnline = pcall(function() pushInventory(inv, stats) end)
+    lastStats  = stats
+    redraw()
+
     while true do
-        drawHeader()
-        
-        -- Scan inventory
-        local inventory, stats = scanAllInventory()
-        
-        -- Send to API
-        local success, msg = sendInventoryToAPI(inventory, stats)
-        
-        -- Update display
-        lastUpdate = os.date("%H:%M:%S")
-        lastSuccess = success
-        
-        drawStats(stats, lastUpdate, success)
-        drawTopItems(inventory)
-        
-        -- Check for craft jobs every 2 updates (4 seconds) - MORE FREQUENT!
-        updateCounter = updateCounter + 1
-        if updateCounter >= 2 then
-            updateCounter = 0
-            checkCraftQueue()
+        -- Use os.startTimer and wait for that specific timer event
+        local timerId = os.startTimer(SYNC_INTERVAL)
+        while true do
+            local ev, id = os.pullEvent("timer")
+            if id == timerId then break end
         end
-        
-        -- Wait for next update
-        sleep(UPDATE_INTERVAL)
+        local inv2, stats2 = scanInventory()
+        lastStats = stats2
+        local ok = pcall(function() pushInventory(inv2, stats2) end)
+        lastOnline = ok
+        redraw()
     end
 end
 
--- ══════════════════════════════════════════════════════════════════════════
--- Craft Queue Handler - CLIENT-SIDE with peripheral.pushItems
--- ══════════════════════════════════════════════════════════════════════════
-
--- Find item in storage and return storage peripheral + slot
-function findItemInStorage(itemId)
-    -- If itemId is a tag (starts with #), search for matching items
-    local isTag = itemId:sub(1, 1) == "#"
-    local tagName = isTag and itemId:sub(2) or nil
-    
-    -- Collect all matching items with priority
-    local matches = {}
-    
-    for _, storage in ipairs(findAllStorage()) do
-        if storage.peripheral and storage.peripheral.list then
-            for slot, item in pairs(storage.peripheral.list()) do
-                if isTag then
-                    -- For tags, convert to most common item format
-                    local simplifiedTag = tagName:gsub("^c:", ""):gsub("^forge:", "")
-                    local baseName = simplifiedTag:match("([^/]+)$") or simplifiedTag
-                    
-                    -- Build expected item patterns
-                    local patterns = {}
-                    
-                    if simplifiedTag:match("^ingots/") then
-                        patterns = {baseName .. "_ingot"}
-                    elseif simplifiedTag:match("^plates/") or simplifiedTag:match("^sheets/") then
-                        patterns = {baseName .. "_plate", baseName .. "_sheet"}
-                    elseif simplifiedTag:match("^nuggets/") then
-                        patterns = {baseName .. "_nugget"}
-                    elseif simplifiedTag:match("^dusts/") then
-                        patterns = {baseName .. "_dust"}
-                    elseif simplifiedTag:match("^gears/") then
-                        patterns = {baseName .. "_gear"}
-                    elseif simplifiedTag:match("^rods/") then
-                        patterns = {baseName .. "_rod"}
-                    else
-                        patterns = {baseName}
-                    end
-                    
-                    -- Check if item matches any pattern
-                    for _, pattern in ipairs(patterns) do
-                        local itemBaseName = item.name:match(":(.+)") or item.name
-                        
-                        if itemBaseName == pattern or 
-                           itemBaseName:match(pattern .. "$") then
-                            
-                            -- Calculate priority (lower = better)
-                            local priority = 999
-                            if item.name:match("^minecraft:") then
-                                priority = 1  -- Vanilla minecraft - HIGHEST priority
-                            elseif item.name:match("^create:") then
-                                priority = 2  -- Create mod
-                            else
-                                priority = 10  -- Other mods - LOWEST priority
-                            end
-                            
-                            table.insert(matches, {
-                                storage = storage.name,
-                                slot = slot,
-                                count = item.count,
-                                itemName = item.name,
-                                priority = priority
-                            })
-                            break
-                        end
-                    end
-                else
-                    -- Direct item ID match
-                    if item.name == itemId then
-                        return storage.name, slot, item.count
-                    end
-                end
-            end
+-- Task 2: craft queue poller — uses short timer, processes one job at a time
+function taskCraftQueue()
+    while true do
+        local timerId = os.startTimer(3)  -- check every 3 seconds
+        while true do
+            local ev, id = os.pullEvent("timer")
+            if id == timerId then break end
         end
-    end
-    
-    -- If tag search, return best match by priority
-    if isTag and #matches > 0 then
-        -- Sort by priority (lowest first)
-        table.sort(matches, function(a, b)
-            return a.priority < b.priority
-        end)
-        
-        local best = matches[1]
-        return best.storage, best.slot, best.count
-    end
-    
-    return nil
-end
 
--- Get recipe for item
-function getRecipe(itemId)
-    local safeId = itemId:gsub(":", "__")
-    local success, response = pcall(function()
-        return http.get(API_URL .. "/api/recipes/" .. safeId, HTTP_HEADERS)
-    end)
-    
-    if not success or not response then
-        return nil
-    end
-    
-    local data = textutils.unserialiseJSON(response.readAll())
-    response.close()
-    
-    if data and data.recipes and #data.recipes > 0 then
-        return data.recipes[1]
-    end
-    
-    return nil
-end
+        local job = getNextJob()
+        if job then
+            term.setTextColor(colors.orange)
+            print("\n=== CRAFT JOB #"..job.id.." ==="  )
+            print("    "..job.amount.."x "..job.itemId)
+            term.setTextColor(colors.white)
 
--- Parse shaped crafting recipe
-function parseShapedRecipe(recipeData)
-    local pattern = recipeData.pattern or {}
-    local key = recipeData.key or {}
-    local grid = {}
-    
-    for row = 1, 3 do
-        for col = 1, 3 do
-            local index = (row - 1) * 3 + col
-            local patternChar = pattern[row] and pattern[row]:sub(col, col) or " "
-            
-            if patternChar ~= " " and key[patternChar] then
-                local ingredient = key[patternChar]
-                local itemId = ingredient.item or (ingredient[1] and ingredient[1].item)
-                grid[index] = itemId
+            local ok, err = executeJob(job)
+            if ok then
+                craftCount = craftCount + 1
+                reportDone(job.id, true)
+                term.setTextColor(colors.lime)
+                print(">>> JOB #"..job.id.." DONE")
             else
-                grid[index] = nil
+                reportDone(job.id, false, err)
+                term.setTextColor(colors.red)
+                print(">>> JOB #"..job.id.." FAILED: "..(err or "?"))
             end
+            term.setTextColor(colors.white)
+            redraw()
         end
-    end
-    
-    return grid
-end
-
--- Parse mechanical crafting recipe
-function parseMechanicalRecipe(recipeData)
-    local pattern = recipeData.pattern or {}
-    local key = recipeData.key or {}
-    local grid = {}
-    
-    for row = 1, math.min(3, #pattern) do
-        for col = 1, math.min(3, #pattern[row]) do
-            local index = (row - 1) * 3 + col
-            local patternChar = pattern[row]:sub(col, col)
-            
-            if patternChar ~= " " and key[patternChar] then
-                local ingredient = key[patternChar]
-                local itemId = ingredient.item or ingredient.tag
-                grid[index] = itemId
-            else
-                grid[index] = nil
-            end
-        end
-    end
-    
-    return grid
-end
-
--- Parse Create simple recipes (pressing, cutting, etc.)
--- These need only 1 ingredient in slot 5 (center)
-function parseCreateSimpleRecipe(recipeData)
-    local grid = {}
-    
-    -- Get ingredient
-    local ingredients = recipeData.ingredients
-    if not ingredients then
-        return grid
-    end
-    
-    -- Handle single ingredient or array
-    local ingredient = nil
-    if type(ingredients) == "table" then
-        if #ingredients > 0 then
-            ingredient = ingredients[1]
-        else
-            ingredient = ingredients
-        end
-    end
-    
-    if not ingredient then
-        return grid
-    end
-    
-    -- Extract item ID or tag
-    local itemId = nil
-    if type(ingredient) == "string" then
-        itemId = ingredient
-    elseif ingredient.item then
-        itemId = ingredient.item
-    elseif ingredient.tag then
-        -- Tags need special handling - mark with # prefix
-        itemId = "#" .. ingredient.tag
-    elseif ingredient[1] then
-        if ingredient[1].item then
-            itemId = ingredient[1].item
-        elseif ingredient[1].tag then
-            itemId = "#" .. ingredient[1].tag
-        end
-    end
-    
-    if itemId then
-        grid[5] = itemId  -- Center slot (position 5 in 3x3 grid)
-    end
-    
-    return grid
-end
-
--- Find depot by name pattern (excludes depot_4 which is for output)
-function findDepot(pattern)
-    for _, name in ipairs(peripheral.getNames()) do
-        if name:match(pattern) and not name:match("depot_4$") then
-            return name, peripheral.wrap(name)
-        end
-    end
-    return nil
-end
-
--- Execute craft job
-function executeCraft(job)
-    print("\n╔════════════════════════════════════════╗")
-    print("║  CRAFT JOB #" .. job.id)
-    print("║  Item: " .. job.itemId)
-    print("║  Amount: " .. job.amount)
-    print("╚════════════════════════════════════════╝")
-    
-    -- Send ALL ingredients for the full amount in one go, instead of
-    -- looping through the depot `amount` times. Each ingredient slot
-    -- gets `job.amount` copies transferred at once.
-    print("\n  Sending ingredients x" .. job.amount .. " in a single batch...")
-    
-    local craftSuccess, craftError = executeSingleCraft(job, job.amount)
-    
-    if craftSuccess then
-        print("\n╔════════════════════════════════════════╗")
-        print("║  BATCH COMPLETE")
-        print("║  Requested: " .. job.amount)
-        print("╚════════════════════════════════════════╝")
-        return true, "Sent ingredients for " .. job.amount .. "x " .. job.itemId
-    else
-        print("\n✗ Batch failed: " .. (craftError or "unknown"))
-        return false, craftError or "Batch failed"
     end
 end
 
--- Execute single craft (moved from executeCraft)
-function executeSingleCraft(job, multiplier)
-    multiplier = multiplier or 1
-    
-    -- Step 1: Get recipe
-    print("\n[STEP 1] Fetching recipe from API...")
-    print("  URL: " .. API_URL .. "/api/recipes/" .. job.itemId:gsub(":", "__"))
-    
-    local success, recipe = pcall(function()
-        return getRecipe(job.itemId)
-    end)
-    
-    if not success then
-        print("  ✗ EXCEPTION: " .. tostring(recipe))
-        return false, "Recipe fetch crashed: " .. tostring(recipe)
-    end
-    
-    if not recipe then
-        print("  ✗ ERROR: No recipe found for " .. job.itemId)
-        print("  Possible reasons:")
-        print("    - Item doesn't exist in database")
-        print("    - API connection failed")
-        print("    - Item ID typo")
-        
-        -- Try HTTP test
-        print("\n  Testing HTTP connection...")
-        local httpTest = pcall(function()
-            local resp = http.get(API_URL .. "/api/stats", HTTP_HEADERS)
-            if resp then
-                print("  ✓ HTTP works, but recipe not found")
-                resp.close()
-            else
-                print("  ✗ HTTP failed")
-            end
-        end)
-        
-        return false, "No recipe found"
-    end
-    
-    print("  ✓ Recipe found!")
-    print("  Type: " .. recipe.type)
-    print("  Recipe ID: " .. (recipe.id or "unknown"))
-    
-    -- Debug: print raw recipe data
-    if recipe.data then
-        print("\n  Raw recipe data:")
-        print("    Has pattern: " .. tostring(recipe.data.pattern ~= nil))
-        print("    Has key: " .. tostring(recipe.data.key ~= nil))
-        print("    Has result: " .. tostring(recipe.data.result ~= nil))
-        print("    Has results: " .. tostring(recipe.data.results ~= nil))
-    end
-    
-    -- Step 2: Parse recipe
-    print("\n[STEP 2] Parsing recipe...")
-    local grid = {}
-    local parseSuccess, parseError
-    
-    if recipe.type == "minecraft:crafting_shaped" then
-        print("  Format: Shaped Crafting (3x3)")
-        parseSuccess, parseError = pcall(function()
-            grid = parseShapedRecipe(recipe.data)
-        end)
-    elseif recipe.type == "create:mechanical_crafting" then
-        print("  Format: Mechanical Crafting")
-        parseSuccess, parseError = pcall(function()
-            grid = parseMechanicalRecipe(recipe.data)
-        end)
-    elseif recipe.type == "create:pressing" or 
-           recipe.type == "create:cutting" or
-           recipe.type == "create:milling" or
-           recipe.type == "create:crushing" or
-           recipe.type == "create:sandpaper_polishing" or
-           recipe.type == "create:deploying" then
-        print("  Format: Create Simple Recipe (" .. recipe.type .. ")")
-        print("  NOTE: This uses mechanical press/saw/etc - not crafter!")
-        print("  Putting ingredient in depot center (slot 5)")
-        parseSuccess, parseError = pcall(function()
-            grid = parseCreateSimpleRecipe(recipe.data)
-        end)
-    else
-        print("  ✗ ERROR: Unsupported recipe type: " .. recipe.type)
-        print("  Supported types:")
-        print("    - minecraft:crafting_shaped")
-        print("    - create:mechanical_crafting")
-        print("    - create:pressing, cutting, milling, crushing")
-        return false, "Unsupported recipe type: " .. recipe.type
-    end
-    
-    if not parseSuccess then
-        print("  ✗ EXCEPTION during parsing: " .. tostring(parseError))
-        return false, "Recipe parse failed: " .. tostring(parseError)
-    end
-    
-    -- Validate grid
-    local itemCount = 0
-    for i = 1, 9 do
-        if grid[i] then itemCount = itemCount + 1 end
-    end
-    
-    if itemCount == 0 then
-        print("  ✗ ERROR: Recipe grid is empty after parsing!")
-        print("  This means recipe.data.pattern or recipe.data.key is malformed")
-        return false, "Empty recipe grid"
-    end
-    
-    print("  ✓ Grid parsed: " .. itemCount .. " slots filled")
-    
-    -- Show grid
-    print("\n  Recipe Grid (3x3):")
-    for row = 1, 3 do
-        local line = "    "
-        for col = 1, 3 do
-            local index = (row - 1) * 3 + col
-            local item = grid[index]
-            if item then
-                local shortName = item:match(":(.+)") or item
-                line = line .. "[" .. shortName:sub(1, 8) .. "] "
-            else
-                line = line .. "[   -   ] "
-            end
-        end
-        print(line)
-    end
-    
-    -- Step 3: Find depot
-    print("\n[STEP 3] Finding depot...")
-    print("  Looking for: depot_5, depot_6, depot_7 (or any depot_N)")
-    print("  Pattern match: 'depot_%d+$'")
-    print("\n  Available peripherals:")
-    
-    local allPeripherals = peripheral.getNames()
-    local foundDepots = {}
-    
-    for _, name in ipairs(allPeripherals) do
-        local ptype = peripheral.getType(name)
-        print("    - " .. name .. " (type: " .. ptype .. ")")
-        
-        -- Check if it matches depot pattern (depot_N where N is any number)
-        if name:match("depot_%d+$") then
-            table.insert(foundDepots, name)
-            print("      ^ MATCHES depot pattern!")
-        end
-    end
-    
-    print("\n  Depots matching pattern: " .. #foundDepots)
-    for _, d in ipairs(foundDepots) do
-        print("    - " .. d)
-    end
-    
-    if #foundDepots == 0 then
-        print("\n  ✗ ERROR: No depot found!")
-        print("  Troubleshooting:")
-        print("    1. Check peripheral names above")
-        print("    2. Depot must be named like 'depot_5', 'depot_6', etc")
-        print("    3. Or contain these names (e.g., 'create:depot_5')")
-        print("    4. Connected via Wired Modem")
-        print("    5. Modem is activated (right-click)")
-        print("\n  If your depot has 'create:' prefix, pattern still works")
-        return false, "No depot found"
-    end
-    
-    local depotName, depot = findDepot("depot_%d+$")
-    if not depot then
-        print("  ✗ ERROR: Found depot names but cannot wrap peripheral!")
-        return false, "Cannot wrap depot"
-    end
-    
-    print("\n  ✓ Selected depot: " .. depotName)
-    print("  Depot type: " .. peripheral.getType(depotName))
-    
-    -- Check depot methods
-    print("\n  Testing depot methods...")
-    local methods = peripheral.getMethods(depotName) or {}
-    local hasSize = false
-    local hasList = false
-    local hasPushItems = false
-    
-    for _, method in ipairs(methods) do
-        if method == "size" then hasSize = true end
-        if method == "list" then hasList = true end
-        if method == "pushItems" then hasPushItems = true end
-    end
-    
-    print("    size() available: " .. tostring(hasSize))
-    print("    list() available: " .. tostring(hasList))
-    print("    pushItems() available: " .. tostring(hasPushItems))
-    
-    if not hasList then
-        print("\n  ✗ ERROR: Depot doesn't have list() method!")
-        print("  This peripheral may not be a valid inventory")
-        return false, "Depot is not an inventory"
-    end
-    
-    -- Check depot capacity
-    if hasSize then
-        local depotSize = depot.size()
-        print("    Depot capacity: " .. depotSize .. " slots")
-    end
-    
-    -- Check current contents
-    local currentItems = depot.list()
-    local itemCount = 0
-    for _ in pairs(currentItems) do itemCount = itemCount + 1 end
-    print("    Current items in depot: " .. itemCount)
-    
-    if itemCount > 0 then
-        print("    ⚠ WARNING: Depot is not empty!")
-        for slot, item in pairs(currentItems) do
-            print("      Slot " .. slot .. ": " .. item.name .. " x" .. item.count)
-        end
-    end
-    
-    -- Step 4: Find and transfer items
-    print("\n[STEP 4] Finding and transferring items...")
-    
-    local itemsNeeded = {}
-    for index = 1, 9 do
-        if grid[index] then
-            table.insert(itemsNeeded, {index = index, itemId = grid[index]})
-        end
-    end
-    
-    print("  Items needed: " .. #itemsNeeded)
-    
-    if #itemsNeeded == 0 then
-        print("  ✗ ERROR: Recipe grid has no items!")
-        return false, "Empty recipe"
-    end
-    
-    -- Get list of all storage devices
-    local storageDevices = findAllStorage()
-    print("  Storage devices available: " .. #storageDevices)
-    for _, storage in ipairs(storageDevices) do
-        print("    - " .. storage.name .. " (" .. storage.type .. ")")
-    end
-    
-    for itemNum, item in ipairs(itemsNeeded) do
-        print("\n  [" .. itemNum .. "/" .. #itemsNeeded .. "] Processing slot " .. item.index .. ": " .. item.itemId)
-        
-        -- Check if it's a tag
-        if item.itemId:sub(1, 1) == "#" then
-            print("    This is a TAG: " .. item.itemId:sub(2))
-            print("    Searching for items matching this tag...")
-        else
-            print("    Looking for exact item: " .. item.itemId)
-        end
-        
-        print("    Searching in storage...")
-        
-        -- Use findItemInStorage which supports tags!
-        local storageName, slot, count = findItemInStorage(item.itemId)
-        
-        if not storageName then
-            print("    ✗ ERROR: Item not found in any storage!")
-            
-            if item.itemId:sub(1, 1) == "#" then
-                print("    Tag was: " .. item.itemId:sub(2))
-                local baseName = item.itemId:match("([^/]+)$") or "unknown"
-                print("    Looking for items containing: " .. baseName)
-            end
-            
-            print("\n    Detailed storage contents:")
-            for _, storage in ipairs(storageDevices) do
-                print("      " .. storage.name .. ":")
-                if storage.peripheral and storage.peripheral.list then
-                    local items = storage.peripheral.list()
-                    local count = 0
-                    for _ in pairs(items) do count = count + 1 end
-                    
-                    if count == 0 then
-                        print("        (empty)")
-                    else
-                        print("        Contains " .. count .. " different items:")
-                        local shown = 0
-                        for _, i in pairs(items) do
-                            if shown < 5 then
-                                print("          - " .. i.name .. " x" .. i.count)
-                                shown = shown + 1
-                            end
-                        end
-                        if count > 5 then
-                            print("          ... and " .. (count - 5) .. " more")
-                        end
-                    end
-                else
-                    print("        (cannot list items)")
-                end
-            end
-            
-            return false, "Item not found: " .. item.itemId
-        end
-        
-        print("    ✓ Found in: " .. storageName)
-        print("    Slot: " .. slot)
-        print("    Available: " .. count .. "x")
-        
-        -- Get actual item details
-        local storage = peripheral.wrap(storageName)
-        if storage then
-            local itemDetails = storage.getItemDetail(slot)
-            if itemDetails then
-                print("    ACTUAL ITEM: " .. itemDetails.name .. " x" .. itemDetails.count)
-            end
-        end
-        
-        -- Transfer item
-        print("    Attempting transfer...")
-        print("      Source: " .. storageName)
-        print("      Target: " .. depotName)
-        
-        -- Extract short names (without prefix) for pushItems/pullItems
-        local storageShortName = storageName:match("([^:]+)$") or storageName
-        local depotShortName = depotName:match("([^:]+)$") or depotName
-        
-        local storage = peripheral.wrap(storageName)
-        if not storage then
-            print("    ✗ ERROR: Cannot wrap storage peripheral")
-            return false, "Cannot access storage: " .. storageName
-        end
-        
-        -- Find intermediary chest (buffer)
-        local bufferName = nil
-        for _, name in ipairs(peripheral.getNames()) do
-            local ptype = peripheral.getType(name)
-            -- Look for regular chest as buffer
-            if ptype == "minecraft:chest" or name:match("chest") and not name:match("vault") then
-                bufferName = name
-                break
-            end
-        end
-        
-        local success, result
-        local moved = 0
-        
-        -- METHOD 1: Try direct transfer (4 variations)
-        print("\n    Method 1: Direct transfer")
-        
-        -- Try short name push
-        success, result = pcall(function()
-            return storage.pushItems(depotShortName, slot, multiplier)
-        end)
-        
-        if success and result and result > 0 then
-            moved = result
-            print("    ✓ Direct push (short name) worked!")
-        else
-            -- Try full name push
-            success, result = pcall(function()
-                return storage.pushItems(depotName, slot, multiplier)
-            end)
-            
-            if success and result and result > 0 then
-                moved = result
-                print("    ✓ Direct push (full name) worked!")
-            else
-                -- Try short name pull
-                success, result = pcall(function()
-                    return depot.pullItems(storageShortName, slot, multiplier)
-                end)
-                
-                if success and result and result > 0 then
-                    moved = result
-                    print("    ✓ Direct pull (short name) worked!")
-                else
-                    -- Try full name pull
-                    success, result = pcall(function()
-                        return depot.pullItems(storageName, slot, multiplier)
-                    end)
-                    
-                    if success and result and result > 0 then
-                        moved = result
-                        print("    ✓ Direct pull (full name) worked!")
-                    else
-                        print("    ✗ All direct methods failed")
-                        
-                        -- METHOD 2: Use buffer chest
-                        if bufferName then
-                            print("\n    Method 2: Using buffer chest: " .. bufferName)
-                            local buffer = peripheral.wrap(bufferName)
-                            local bufferShortName = bufferName:match("([^:]+)$") or bufferName
-                            
-                            -- Step 1: Storage -> Buffer (try both push and pull)
-                            print("      Step 1: " .. storageName .. " -> " .. bufferName)
-                            
-                            -- Try: storage pushes to buffer
-                            success, result = pcall(function()
-                                return storage.pushItems(bufferShortName, slot, multiplier)
-                            end)
-                            
-                            if not success or not result or result == 0 then
-                                -- Try full name
-                                success, result = pcall(function()
-                                    return storage.pushItems(bufferName, slot, multiplier)
-                                end)
-                            end
-                            
-                            -- If push failed, try: buffer pulls from storage
-                            if not success or not result or result == 0 then
-                                print("      Push failed, trying pull...")
-                                
-                                -- WORKING METHOD: Use short names without prefix
-                                local storageSimpleName = storageName:match("item_vault_%d+") or 
-                                                         storageName:match("chest_%d+") or
-                                                         storageShortName
-                                
-                                print("      Trying: buffer.pullItems('" .. storageSimpleName .. "', " .. slot .. ", 1)")
-                                success, result = pcall(function()
-                                    return buffer.pullItems(storageSimpleName, slot, multiplier)
-                                end)
-                                
-                                if not success or not result or result == 0 then
-                                    print("      Failed, trying full name...")
-                                    success, result = pcall(function()
-                                        return buffer.pullItems(storageName, slot, multiplier)
-                                    end)
-                                end
-                            end
-                            
-                            if success and result and result > 0 then
-                                print("      ✓ Moved to buffer: " .. result)
-                                
-                                -- Find item in buffer
-                                local bufferSlot = nil
-                                for s, i in pairs(buffer.list()) do
-                                    if i.name == item.itemId or (item.itemId:sub(1,1) == "#" and i.name:find(item.itemId:match("([^/]+)$"))) then
-                                        bufferSlot = s
-                                        break
-                                    end
-                                end
-                                
-                                if bufferSlot then
-                                    -- Step 2: Buffer -> Depot (try both push and pull)
-                                    print("      Step 2: " .. bufferName .. " -> " .. depotName)
-                                    
-                                    -- Try: buffer pushes to depot
-                                    success, result = pcall(function()
-                                        return buffer.pushItems(depotShortName, bufferSlot, multiplier)
-                                    end)
-                                    
-                                    if not success or not result or result == 0 then
-                                        success, result = pcall(function()
-                                            return buffer.pushItems(depotName, bufferSlot, multiplier)
-                                        end)
-                                    end
-                                    
-                                    -- If push failed, try: depot pulls from buffer
-                                    if not success or not result or result == 0 then
-                                        print("      Push failed, trying pull...")
-                                        success, result = pcall(function()
-                                            return depot.pullItems(bufferShortName, bufferSlot, multiplier)
-                                        end)
-                                        
-                                        if not success or not result or result == 0 then
-                                            success, result = pcall(function()
-                                                return depot.pullItems(bufferName, bufferSlot, multiplier)
-                                            end)
-                                        end
-                                    end
-                                    
-                                    if success and result and result > 0 then
-                                        moved = result
-                                        print("      ✓ Moved to depot: " .. result)
-                                    else
-                                        print("      ✗ Failed: " .. tostring(result))
-                                        return false, "Buffer->Depot transfer failed"
-                                    end
-                                else
-                                    print("      ✗ Item not found in buffer")
-                                    return false, "Item lost in buffer"
-                                end
-                            else
-                                print("      ✗ Failed: " .. tostring(result))
-                                return false, "Storage->Buffer transfer failed"
-                            end
-                        else
-                            print("\n    ✗ No buffer chest found!")
-                            print("    Solution: Place a minecraft:chest next to computer")
-                            print("    Connect it to wired modem network")
-                            return false, "Cannot transfer - no route available"
-                        end
-                    end
-                end
-            end
-        end
-        
-        if moved == 0 then
-            print("    ✗ 0 items moved")
-            return false, "Failed to move item"
-        end
-        
-        print("    ✓ SUCCESS: Moved " .. moved .. "x " .. item.itemId)
-        print("    Waiting 0.5s before next item...")
-        sleep(0.5)
-    end
-    
-    print("\n  ✓✓✓ All " .. #itemsNeeded .. " items transferred successfully!")
-    
-    -- Step 5: Wait for craft
-    -- Wait time scales with the batch size (multiplier) since the
-    -- mechanical crafter needs to process `multiplier` items, not just 1.
-    local waitChecks = math.max(5, 2 * multiplier)
-    print("\n[STEP 5] Waiting for craft to complete...")
-    print("  Mechanical press/crafters should now process the items")
-    print("  Waiting up to " .. (waitChecks * 2) .. " seconds (checks every 2s)...")
-    
-    -- Wait and check periodically for the FULL requested count, not just 1
-    for i = 1, waitChecks do
-        sleep(2)
-        print("  " .. (i*2) .. "s... checking for output")
-        
-        -- Count how many of the target item have appeared across all depots
-        local foundCount = 0
-        for _, name in ipairs(peripheral.getNames()) do
-            if name:match("depot") then
-                local p = peripheral.wrap(name)
-                if p and p.list then
-                    for _, item in pairs(p.list()) do
-                        if item.name == job.itemId then
-                            foundCount = foundCount + item.count
-                        end
-                    end
-                end
-            end
-        end
-        
-        if foundCount > 0 then
-            print("  " .. foundCount .. "/" .. multiplier .. " output items detected so far")
-        end
-        
-        if foundCount >= multiplier then
-            print("  ✓ Full batch output detected!")
-            print("  Skipping remaining wait time")
-            break
-        end
-    end
-    
-    print("  ✓ Wait complete")
-    
-    -- Step 6: Check output and return to vault
-    print("\n[STEP 6] Checking ALL depots for output...")
-    print("  Looking for: " .. job.itemId)
-    
-    -- Find vault for return
-    local returnVault = nil
-    local returnVaultName = nil
-    for _, name in ipairs(peripheral.getNames()) do
-        if name:match("item_vault") then
-            returnVaultName = name
-            returnVault = peripheral.wrap(name)
-            print("  Found vault: " .. name)
-            break
-        end
-    end
-    
-    -- Find buffer chest
-    local bufferName = nil
-    local buffer = nil
-    for _, name in ipairs(peripheral.getNames()) do
-        local ptype = peripheral.getType(name)
-        if ptype == "minecraft:chest" or (name:match("chest") and not name:match("vault")) then
-            bufferName = name
-            buffer = peripheral.wrap(name)
-            print("  Found buffer: " .. name)
-            break
-        end
-    end
-    
-    print("")
-    
-    -- Check ALL depots for output
-    local foundOutput = false
-    local depotsChecked = 0
-    
-    for _, name in ipairs(peripheral.getNames()) do
-        if name:match("depot") then
-            depotsChecked = depotsChecked + 1
-            print("  Checking " .. name .. "...")
-            
-            local p = peripheral.wrap(name)
-            if p and p.list then
-                local items = p.list()
-                local itemCount = 0
-                for _ in pairs(items) do itemCount = itemCount + 1 end
-                
-                print("    Contains " .. itemCount .. " items")
-                
-                for slot, item in pairs(items) do
-                    print("    Slot " .. slot .. ": " .. item.name .. " x" .. item.count)
-                    
-                    -- Check if this is the crafted item
-                    if item.name == job.itemId then
-                        print("      ✓✓✓ THIS IS THE CRAFTED ITEM!")
-                        foundOutput = true
-                    end
-                    
-                    -- Try to return to vault via buffer
-                    if returnVault and buffer and bufferName and returnVaultName then
-                        print("    Returning to vault via buffer...")
-                        
-                        local depotShort = name:match("depot_%d+") or name:match("([^:]+)$")
-                        local bufferShort = bufferName:match("chest_%d+") or bufferName:match("([^:]+)$")
-                        local vaultShort = returnVaultName:match("item_vault_%d+") or returnVaultName:match("([^:]+)$")
-                        
-                        -- Step 1: Buffer pulls from depot
-                        print("      Step 1: " .. depotShort .. " -> " .. bufferShort)
-                        
-                        -- Try short name first
-                        local success, moved = pcall(function()
-                            return buffer.pullItems(depotShort, slot, item.count)
-                        end)
-                        
-                        -- If failed, try full name
-                        if not success or not moved or moved == 0 then
-                            print("        Short name failed, trying full: " .. name)
-                            success, moved = pcall(function()
-                                return buffer.pullItems(name, slot, item.count)
-                            end)
-                        end
-                        
-                        if success and moved and moved > 0 then
-                            print("      ✓ Moved to buffer: " .. moved)
-                            
-                            -- Find in buffer
-                            local bufferSlot = nil
-                            for s, i in pairs(buffer.list()) do
-                                if i.name == item.name then
-                                    bufferSlot = s
-                                    break
-                                end
-                            end
-                            
-                            if bufferSlot then
-                                -- Step 2: Vault pulls from buffer
-                                print("      Step 2: " .. bufferShort .. " -> " .. vaultShort)
-                                
-                                -- Try short name first
-                                success, moved = pcall(function()
-                                    return returnVault.pullItems(bufferShort, bufferSlot, item.count)
-                                end)
-                                
-                                -- If failed, try full name
-                                if not success or not moved or moved == 0 then
-                                    print("        Short name failed, trying full: " .. bufferName)
-                                    success, moved = pcall(function()
-                                        return returnVault.pullItems(bufferName, bufferSlot, item.count)
-                                    end)
-                                end
-                                
-                                if success and moved and moved > 0 then
-                                    print("      ✓ Returned " .. moved .. " to vault!")
-                                else
-                                    print("      ⚠ Could not move from buffer to vault")
-                                end
-                            else
-                                print("      ⚠ Item not found in buffer")
-                            end
-                        else
-                            print("      ⚠ Could not move to buffer: " .. tostring(moved))
-                        end
-                    else
-                        print("    ⚠ Missing vault or buffer for return")
-                    end
-                end
-            end
-        end
-    end
-    
-    if not foundOutput then
-        print("  ⚠ Crafted item not found in any depot")
-        print("  Check mechanical crafters and output location")
-    end
-    
-    print("\n╔════════════════════════════════════════╗")
-    print("║  ✓ CRAFT SEQUENCE COMPLETED")
-    print("║  All steps executed without errors")
-    print("║  Check output manually if needed")
-    print("╚════════════════════════════════════════╝\n")
-    
-    return true
-end
-
-function checkCraftQueue()
-    -- Check if there's a pending craft job
-    local success, response = pcall(function()
-        return http.get(API_URL .. "/api/queue/next", HTTP_HEADERS)
-    end)
-    
-    if not success or not response then
-        return
-    end
-    
-    local data = textutils.unserialiseJSON(response.readAll())
-    response.close()
-    
-    if data.job then
-        print("\n" .. string.rep("=", 50))
-        print("  NEW CRAFT JOB DETECTED!")
-        print(string.rep("=", 50))
-        print("  Job ID: " .. data.job.id)
-        print("  Item: " .. data.job.itemId) 
-        print("  Amount: " .. data.job.amount)
-        print(string.rep("=", 50) .. "\n")
-        
-        print("CRAFT PLAN:")
-        print("  1. Fetch recipe from API")
-        print("  2. Parse recipe into 3x3 grid")
-        print("  3. Find depot (depot_1/2/3)")
-        print("  4. Find items in storage (item_vault_5/6)")
-        print("  5. Transfer items using peripheral.pushItems()")
-        print("  6. Wait for mechanical crafters")
-        print("  7. Check output in depot_4")
-        print("")
-        print("Starting in 3 seconds...")
-        sleep(3)
-        
-        -- Execute craft
-        local success, error = executeCraft(data.job)
-        
-        -- Report result to server
-        local endpoint = success and "/api/queue/" .. data.job.id .. "/complete" 
-                                  or "/api/queue/" .. data.job.id .. "/fail"
-        
-        local payload = success and {} or {error = error or "Unknown error"}
-        local jsonData = textutils.serialiseJSON(payload)
-        
-        pcall(function()
-            local resp = http.post(API_URL .. endpoint, jsonData, HTTP_HEADERS)
-            if resp then resp.close() end
-        end)
-        
-        if success then
-            print("\n" .. string.rep("█", 50))
-            print("  ✓✓✓ JOB #" .. data.job.id .. " COMPLETED!")
-            print(string.rep("█", 50) .. "\n")
-        else
-            print("\n" .. string.rep("!", 50))
-            print("  ✗✗✗ JOB #" .. data.job.id .. " FAILED!")
-            print("  ERROR: " .. (error or "Unknown"))
-            print(string.rep("!", 50) .. "\n")
+-- Task 3: keyboard input (Ctrl+T handled by CC itself, but we can catch other keys)
+function taskInput()
+    while true do
+        local ev, key = os.pullEvent("key")
+        -- r = manual redraw/rescan
+        if key == keys.r then
+            local inv, stats = scanInventory()
+            lastStats = stats
+            pushInventory(inv, stats)
+            redraw()
         end
     end
 end
 
 -- ══════════════════════════════════════════════════════════════════════════
--- Start
+-- Startup
 -- ══════════════════════════════════════════════════════════════════════════
 
-print("ME Terminal Bridge v1.0")
-print("Connecting to: " .. API_URL)
-print("")
+term.setBackgroundColor(colors.black)
+term.clear()
+term.setCursorPos(1,1)
+term.setTextColor(colors.yellow)
+print("ME Terminal v3.0 starting...")
+print("Testing API connection...")
 
--- Test connection
-print("Testing connection...")
-local testResponse = http.get(API_URL .. "/api/stats", HTTP_HEADERS)
-if not testResponse then
-    print("ERROR: Cannot connect to server!")
-    print("Check that Railway is running")
+local testOk = pcall(function()
+    local r = http.get(API_URL.."/api/stats", HEADERS)
+    if r then r.close() else error("no response") end
+end)
+
+if not testOk then
+    term.setTextColor(colors.red)
+    print("ERROR: Cannot connect to "..API_URL)
+    print("Check Railway deployment!")
     return
 end
-testResponse.close()
 
-print("Connected!")
+term.setTextColor(colors.lime)
+print("Connected! Starting event loop...")
+print("Press R to force rescan, Ctrl+T to stop")
 sleep(1)
 
--- Start main loop
-main()
+-- Run all tasks in parallel — no blocking sleep anywhere
+parallel.waitForAny(taskInventorySync, taskCraftQueue, taskInput)
