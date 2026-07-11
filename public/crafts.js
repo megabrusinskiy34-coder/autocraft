@@ -28,6 +28,7 @@ async function init() {
   await loadCustomRecipes();
   await loadQueue();
   await loadLog();
+  await loadCcLog();
   buildGrid();
   renderStoragePanel();
   connectSSE();
@@ -164,6 +165,9 @@ function connectSSE() {
     renderRecipes();
     document.getElementById('customCount').textContent = customRecipes.length;
   });
+  es.addEventListener('ccLog', e => {
+    renderCcLog(JSON.parse(e.data));
+  });
 
   es.onopen  = () => { dot.classList.add('online');    txt.textContent = 'LIVE';       };
   es.onerror = () => { dot.classList.remove('online'); txt.textContent = 'OFFLINE'; };
@@ -175,7 +179,7 @@ function connectSSE() {
 // ─────────────────────────────────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
-    t.classList.toggle('active', ['builder','recipes','queue','history'][i] === name);
+    t.classList.toggle('active', ['builder','recipes','queue','history','cclog'][i] === name);
   });
   document.querySelectorAll('.tab-content').forEach(c => {
     c.classList.toggle('active', c.id === 'tab-'+name);
@@ -578,6 +582,65 @@ async function clearLog() {
   await fetch(`${API}/api/log`,{method:'DELETE'});
   craftLog = []; renderLog();
   showToast('Cleared','success');
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// CC Log
+// ─────────────────────────────────────────────────────────────────────────
+let ccLogEntries = [];
+
+async function loadCcLog() {
+  try {
+    const r = await fetch(`${API}/api/cc-log?limit=200`);
+    const d = await r.json();
+    ccLogEntries = d.log || [];
+    renderCcLog(ccLogEntries);
+  } catch {}
+}
+
+function renderCcLog(entries) {
+  ccLogEntries = entries;
+  const list = document.getElementById('ccLogList');
+  if (!list) return;
+
+  const status = document.getElementById('ccLogStatus');
+  if (status) status.textContent = entries.length + ' lines';
+
+  // Highlight known patterns
+  const colorMap = [
+    [/\[FAIL\]|\[ERROR\]/i,    '#ff6b6b'],
+    [/\[WARN\]/i,               '#ffa94d'],
+    [/GOT \d+x|✓|COMPLETED/i, '#69db7c'],
+    [/=== JOB|NEW JOB/i,        '#74c0fc'],
+    [/Pass \d+\//i,             '#ffd43b'],
+    [/Recipe:|Crafter=|Press/i, '#da77f2'],
+  ];
+
+  list.innerHTML = entries.slice(-300).map(entry => {
+    const msg   = String(entry.msg || entry).replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const ts    = entry.ts ? new Date(entry.ts).toLocaleTimeString() : '';
+    let color   = '#c8d0d9';
+    for (const [pat, col] of colorMap) {
+      if (pat.test(msg)) { color = col; break; }
+    }
+    return `<div style="color:${color};padding:1px 0"><span style="color:#555;margin-right:8px;font-size:10px">${ts}</span>${msg}</div>`;
+  }).join('');
+
+  // Auto-scroll to bottom
+  list.scrollTop = list.scrollHeight;
+
+  // Flash tab if not active
+  const tab = document.getElementById('tabCclog');
+  if (tab && !tab.classList.contains('active') && entries.length > 0) {
+    tab.style.borderColor = '#ff6b6b';
+    setTimeout(() => { tab.style.borderColor = ''; }, 2000);
+  }
+}
+
+async function clearCcLog() {
+  await fetch(`${API}/api/cc-log`, { method: 'DELETE' });
+  ccLogEntries = [];
+  renderCcLog([]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────

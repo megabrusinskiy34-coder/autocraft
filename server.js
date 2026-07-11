@@ -119,6 +119,32 @@ app.get('/api/recipe/:id', (req, res) => {
   r ? res.json(r) : res.status(404).json({ error: 'not found' });
 });
 
+// ── CC Terminal Log ───────────────────────────────────────────────────────
+let ccLog = [];  // [{ts, level, msg}]
+
+app.post('/api/cc-log', (req, res) => {
+  const { lines, level } = req.body;
+  if (!lines) return res.status(400).json({ ok: false });
+  const entries = (Array.isArray(lines) ? lines : [lines]).map(msg => ({
+    ts: Date.now(), level: level || 'info', msg: String(msg)
+  }));
+  ccLog.push(...entries);
+  if (ccLog.length > 500) ccLog = ccLog.slice(-500);
+  broadcast('ccLog', ccLog.slice(-100));
+  res.json({ ok: true });
+});
+
+app.get('/api/cc-log', (req, res) => {
+  const limit = parseInt(req.query.limit) || 200;
+  res.json({ log: ccLog.slice(-limit), total: ccLog.length });
+});
+
+app.delete('/api/cc-log', (req, res) => {
+  ccLog = [];
+  broadcast('ccLog', []);
+  res.json({ ok: true });
+});
+
 // ── Debug endpoint ────────────────────────────────────────────────────────
 app.get('/api/debug', (req, res) => {
   res.json({

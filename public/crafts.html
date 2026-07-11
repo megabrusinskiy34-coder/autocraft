@@ -157,6 +157,7 @@
   <div class="tab" onclick="switchTab('recipes')">📋 Custom Recipes</div>
   <div class="tab" onclick="switchTab('queue')">⏳ Queue</div>
   <div class="tab" onclick="switchTab('history')">📜 History</div>
+  <div class="tab" onclick="switchTab('cclog')" id="tabCclog">🖥 CC Log</div>
 </div>
 
 <!-- ═══ BUILDER ═══ -->
@@ -281,6 +282,20 @@
 </div>
 
 </div><!-- me-container -->
+
+<!-- ═══ CC LOG TAB ═══ -->
+<div class="tab-content" id="tab-cclog">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+    <div class="section-title" style="margin-bottom:0">CC Terminal Log</div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span style="font-size:11px;color:var(--parchment-faint);font-family:'JetBrains Mono',monospace" id="ccLogStatus">Waiting for CC...</span>
+      <button class="btn btn-danger btn-sm" onclick="clearCcLog()">Clear</button>
+    </div>
+  </div>
+  <div id="ccLogList" style="font-family:'JetBrains Mono',monospace;font-size:12px;background:var(--bg-slot);border:1px solid var(--rivet);border-radius:6px;padding:12px;min-height:400px;max-height:calc(100vh - 260px);overflow-y:auto;line-height:1.7">
+    <div style="color:var(--parchment-faint)">No CC log yet. Run me_terminal.lua in ComputerCraft.</div>
+  </div>
+</div>
 
 <!-- Popup overlay -->
 <div class="overlay" id="overlay" onclick="closeItemPicker()"></div>
