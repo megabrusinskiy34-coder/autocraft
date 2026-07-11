@@ -110,6 +110,11 @@ app.get('/api/recipe/:id', (req, res) => {
   r ? res.json(r) : res.status(404).json({ error: 'not found' });
 });
 
+// ── Textures map (full) ───────────────────────────────────────────────────
+app.get('/api/textures', (req, res) => {
+  res.json(itemTextures);
+});
+
 // ── Search ────────────────────────────────────────────────────────────────
 app.get('/api/search', (req, res) => {
   const q = (req.query.q || '').toLowerCase();

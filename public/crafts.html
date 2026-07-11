@@ -215,6 +215,8 @@
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
     <div class="section-title" style="margin-bottom:0">Craft History</div>
     <div style="display:flex;gap:8px;align-items:center">
+      <input type="text" id="historySearch" placeholder="Search..." oninput="renderLog()"
+        style="padding:8px 12px;background:var(--bg-slot);border:1px solid var(--rivet);border-radius:4px;color:var(--parchment);font-family:'Inter',sans-serif;font-size:12px;outline:none;width:180px">
       <span class="count-badge" id="historyBadge">0</span>
       <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
     </div>
