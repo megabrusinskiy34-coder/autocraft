@@ -204,14 +204,26 @@ function createItemCard(item) {
     const texture = craftableItems[item.id]?.texture;
     if (texture) {
         const img = document.createElement('img');
-        img.src = `/textures/${texture}`;
+        // texture already includes 'textures/' prefix from item_textures.json
+        img.src = `/${texture}`;
         img.onerror = () => { 
-            icon.innerHTML = '📦';
-            icon.classList.add('missing');
+            // Try minecraft wiki fallback for vanilla items
+            const ns = item.namespace || 'minecraft';
+            const itemName = (item.id || '').split(':')[1] || '';
+            if (ns === 'minecraft') {
+                img.src = `https://minecraft.wiki/images/invicon_${itemName.replace(/_/g,'-').replace(/\b./g, m => m.toUpperCase()).replace(/-/g,'_')}.png`;
+                img.onerror = () => {
+                    icon.innerHTML = getNamespaceEmoji(item.namespace);
+                    icon.classList.add('missing');
+                };
+            } else {
+                icon.innerHTML = getNamespaceEmoji(item.namespace);
+                icon.classList.add('missing');
+            }
         };
         icon.appendChild(img);
     } else {
-        icon.textContent = '📦';
+        icon.innerHTML = getNamespaceEmoji(item.namespace);
         icon.classList.add('missing');
     }
     
@@ -251,7 +263,7 @@ function showItemDetails(item) {
     content.innerHTML = `
         <div class="item-details">
             <div class="detail-icon">
-                ${texture ? `<img src="/textures/${texture}" onerror="this.parentElement.innerHTML='📦'">` : '📦'}
+                ${texture ? `<img src="/${texture}" onerror="this.src='https://minecraft.wiki/images/invicon_${(item.id||'').split(':')[1]?.replace(/_/g,'-')}.png'; this.onerror=function(){this.parentElement.innerHTML=getNamespaceEmoji('${item.namespace}');}">` : getNamespaceEmoji(item.namespace)}
             </div>
             <div class="detail-name">${item.name}</div>
             <div class="detail-id">${item.id}</div>
@@ -314,7 +326,7 @@ function renderQueue() {
         
         item.innerHTML = `
             <div class="queue-icon">
-                ${texture ? `<img src="/textures/${texture}">` : '📦'}
+                ${texture ? `<img src="/${texture}" onerror="this.parentElement.innerHTML='⚙️'">` : '⚙️'}
                 ${isCrafting ? '<span class="mini-cog">⚙</span>' : ''}
             </div>
             <div class="queue-info">
@@ -362,7 +374,10 @@ function updateStatus(online, data = null) {
         statusText.textContent = 'ONLINE';
         
         if (data) {
-            itemCount.textContent = data.items?.length || 0;
+            // Show total item count (all pieces), not unique item count
+            itemCount.textContent = data.stats?.totalItems 
+                ? formatCount(data.stats.totalItems) 
+                : (data.items?.length || 0);
             storageCount.textContent = data.stats?.storageDevices || 0;
         }
     } else {
@@ -397,7 +412,7 @@ async function openCraftModal(itemId) {
         
         body.innerHTML = `
             <div class="modal-icon-frame">
-                ${texture ? `<img src="/textures/${texture}" style="width:100%;height:100%;image-rendering:pixelated;">` : '📦'}
+                ${texture ? `<img src="/${texture}" style="width:100%;height:100%;image-rendering:pixelated;" onerror="this.parentElement.innerHTML='⚙️'">` : '⚙️'}
             </div>
             <div class="modal-item-name">${itemId.split(':')[1] || itemId}</div>
             <div class="modal-item-id">${itemId}</div>
@@ -451,6 +466,19 @@ function formatCount(count) {
     if (count >= 1000000) return (count / 1000000).toFixed(1) + 'M';
     if (count >= 1000) return (count / 1000).toFixed(1) + 'K';
     return count.toString();
+}
+
+function getNamespaceEmoji(ns) {
+    const icons = {
+        'minecraft': '🟩',
+        'create': '⚙️',
+        'tfmg': '🏭',
+        'createaddition': '⚡',
+        'createbigcannons': '💣',
+        'farmersdelight': '🌾',
+        'createdeco': '🏗️',
+    };
+    return icons[ns] || '📦';
 }
 
 function showNotification(message, type) {

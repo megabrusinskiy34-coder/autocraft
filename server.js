@@ -82,9 +82,12 @@ app.get('/api/items', (req, res) => {
       }
     }
 
+    // Sort alphabetically by id
+    itemData.sort((a, b) => a.id.localeCompare(b.id));
+
     res.json({
       total: itemData.length,
-      items: itemData.slice(0, 500), // limit for performance
+      items: itemData, // no limit - send all craftable items
     });
   } catch (error) {
     console.error('Error in /api/items:', error);
