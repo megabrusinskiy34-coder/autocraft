@@ -1,128 +1,95 @@
 const API = window.location.origin;
 
-// ── State ─────────────────────────────────────────────────────────────────
-let allItems      = [];   // [{id,name,texture,namespace}] — ALL items with textures
-let craftableMap  = {};   // id -> item
+// ─────────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────────
+let itemsMap      = {};   // id → {id,name,texture,namespace,count}  (all known items)
 let customRecipes = [];
 let craftQueue    = [];
 let craftLog      = [];
+let liveInventory = [];   // items currently in storage (from /api/inventory)
 
-// Builder state
-let builderGrid   = new Array(9).fill(null);
+// Builder
+let builderGrid   = new Array(9).fill(null); // slot index 0-8 → itemId|null
 let builderResult = null;
-let pickerTarget  = null;
 let isPress       = false;
 
-// ── Init ──────────────────────────────────────────────────────────────────
+// Drag
+let dragItemId    = null;
+
+// ─────────────────────────────────────────────────────────────────────────
+// Boot
+// ─────────────────────────────────────────────────────────────────────────
 async function init() {
-  await loadItems();       // loads ALL items (craftable + inventory)
+  // Load items from /api/items - has textures already baked in
+  await loadCraftableItems();
+  // Try to load live inventory for storage panel
+  await loadInventory();
   await loadCustomRecipes();
   await loadQueue();
   await loadLog();
   buildGrid();
+  renderStoragePanel();
   connectSSE();
 }
 
-// ── SSE ───────────────────────────────────────────────────────────────────
-function connectSSE() {
-  const es = new EventSource(`${API}/api/events`);
-  const dot = document.getElementById('sseStatus');
-  const txt = document.getElementById('sseText');
-
-  es.addEventListener('queue', e => {
-    craftQueue = JSON.parse(e.data);
-    renderQueue();
-  });
-  es.addEventListener('log', e => {
-    craftLog = JSON.parse(e.data);
-    renderLog();
-  });
-  es.addEventListener('inventory', async () => {
-    // Re-merge inventory items into allItems for up-to-date icons
-    await mergeInventoryItems();
-  });
-  es.addEventListener('customRecipes', e => {
-    customRecipes = JSON.parse(e.data);
-    renderRecipes();
-    document.getElementById('customCount').textContent = customRecipes.length;
-  });
-
-  es.onopen = () => { dot.classList.add('online'); txt.textContent = 'LIVE'; };
-  es.onerror = () => { dot.classList.remove('online'); txt.textContent = 'OFFLINE'; };
+// ─────────────────────────────────────────────────────────────────────────
+// Item texture helper — ONE source of truth
+// tex is stored as "textures/namespace__name.png"
+// static files served at /textures/… by express
+// ─────────────────────────────────────────────────────────────────────────
+function texUrl(itemId) {
+  const item = itemsMap[itemId];
+  if (item && item.texture) return '/' + item.texture;
+  return null;
 }
 
-// ── Data loading ──────────────────────────────────────────────────────────
+function itemImg(itemId, size) {
+  const url = texUrl(itemId);
+  const sz  = size || '100%';
+  if (url) {
+    return `<img src="${url}" style="width:${sz};height:${sz};image-rendering:pixelated;display:block"
+      onerror="this.style.display='none';this.nextSibling.style.display='flex'">
+      <span style="display:none;width:100%;height:100%;align-items:center;justify-content:center;font-size:14px">📦</span>`;
+  }
+  return `<span style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:14px">📦</span>`;
+}
 
-// Load ALL craftable items with textures from recipes
-async function loadItems() {
+// ─────────────────────────────────────────────────────────────────────────
+// Data loading
+// ─────────────────────────────────────────────────────────────────────────
+async function loadCraftableItems() {
   try {
-    // Load textures map (all ~1600+ items)
-    let texMap = {};
-    try {
-      const tr = await fetch(`${API}/api/textures`);
-      if (tr.ok) texMap = await tr.json();
-    } catch {}
-
-    // Load craftable items from recipes
     const r = await fetch(`${API}/api/items`);
     const d = await r.json();
-    const base = d.items || [];
-
-    craftableMap = {};
-    base.forEach(i => {
-      // Attach texture from texMap if not already present
-      if (!i.texture && texMap[i.id]) i.texture = texMap[i.id];
-      craftableMap[i.id] = i;
+    (d.items || []).forEach(i => {
+      itemsMap[i.id] = { ...i, count: itemsMap[i.id]?.count || 0 };
     });
-
-    // Also build allItems from full texMap so picker shows ALL items
-    const texItems = Object.entries(texMap).map(([id, tex]) => ({
-      id,
-      name: id.split(':')[1]?.replace(/_/g, ' ') || id,
-      namespace: id.split(':')[0] || 'minecraft',
-      texture: tex,
-      recipeTypes: craftableMap[id]?.recipeTypes || []
-    }));
-
-    allItems = texItems;
-
-    // Make sure craftable items are in allItems too
-    base.forEach(i => {
-      if (!allItems.find(a => a.id === i.id)) allItems.push(i);
-    });
-
-    // Sort alphabetically
-    allItems.sort((a, b) => a.id.localeCompare(b.id));
-
-    // Merge live inventory
-    await mergeInventoryItems();
-  } catch(e) { console.error('loadItems failed:', e); }
+  } catch(e) { console.error('loadCraftableItems:', e); }
 }
 
-// Merge items visible in live inventory (they may not be in recipes)
-async function mergeInventoryItems() {
+async function loadInventory() {
   try {
     const r = await fetch(`${API}/api/inventory`);
     const d = await r.json();
-    if (!d.online || !d.items) return;
-
-    d.items.forEach(invItem => {
-      if (!craftableMap[invItem.id]) {
-        // Add to map with texture lookup from existing items or null
-        const existing = allItems.find(i => i.id === invItem.id);
-        if (!existing) {
-          const newItem = {
-            id: invItem.id,
-            name: invItem.name || invItem.id.split(':')[1] || invItem.id,
-            namespace: invItem.namespace || invItem.id.split(':')[0],
+    if (d.online && d.items) {
+      liveInventory = d.items;
+      // Merge into itemsMap with counts + textures
+      d.items.forEach(i => {
+        if (!itemsMap[i.id]) {
+          itemsMap[i.id] = {
+            id: i.id,
+            name: i.name || i.id.split(':')[1] || i.id,
+            namespace: i.namespace || i.id.split(':')[0],
             texture: null,
-            recipeTypes: []
+            count: i.count
           };
-          allItems.push(newItem);
-          craftableMap[invItem.id] = newItem;
+        } else {
+          itemsMap[i.id].count = i.count;
         }
-      }
-    });
+      });
+      renderStoragePanel();
+    }
   } catch {}
 }
 
@@ -133,7 +100,7 @@ async function loadCustomRecipes() {
     customRecipes = d.recipes || [];
     renderRecipes();
     document.getElementById('customCount').textContent = customRecipes.length;
-  } catch(e) { console.error(e); }
+  } catch {}
 }
 
 async function loadQueue() {
@@ -142,7 +109,7 @@ async function loadQueue() {
     const d = await r.json();
     craftQueue = d.queue || [];
     renderQueue();
-  } catch(e) {}
+  } catch {}
 }
 
 async function loadLog() {
@@ -152,21 +119,117 @@ async function loadLog() {
     craftLog = d.log || [];
     renderLog();
     document.getElementById('logCount').textContent = d.total || 0;
-  } catch(e) {}
+  } catch {}
 }
 
-// ── Tab switching ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// SSE — live updates
+// ─────────────────────────────────────────────────────────────────────────
+function connectSSE() {
+  const es  = new EventSource(`${API}/api/events`);
+  const dot = document.getElementById('sseStatus');
+  const txt = document.getElementById('sseText');
+
+  es.addEventListener('inventory', async () => {
+    await loadInventory();
+  });
+  es.addEventListener('queue', e => {
+    craftQueue = JSON.parse(e.data);
+    renderQueue();
+  });
+  es.addEventListener('log', e => {
+    craftLog = JSON.parse(e.data);
+    renderLog();
+  });
+  es.addEventListener('customRecipes', e => {
+    customRecipes = JSON.parse(e.data);
+    renderRecipes();
+    document.getElementById('customCount').textContent = customRecipes.length;
+  });
+
+  es.onopen  = () => { dot.classList.add('online');    txt.textContent = 'LIVE';       };
+  es.onerror = () => { dot.classList.remove('online'); txt.textContent = 'OFFLINE'; };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Tab switching
+// ─────────────────────────────────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
-    const names = ['builder','recipes','queue','history'];
-    t.classList.toggle('active', names[i] === name);
+    t.classList.toggle('active', ['builder','recipes','queue','history'][i] === name);
   });
   document.querySelectorAll('.tab-content').forEach(c => {
     c.classList.toggle('active', c.id === 'tab-'+name);
   });
 }
 
-// ── Builder grid ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// Storage panel (left side of builder)
+// Drag items from here into craft grid slots
+// ─────────────────────────────────────────────────────────────────────────
+function renderStoragePanel() {
+  const panel = document.getElementById('storagePanel');
+  const search = (document.getElementById('storageSearch')?.value || '').toLowerCase();
+  if (!panel) return;
+
+  // Sort by count desc, filter by search
+  let items = Object.values(itemsMap).filter(i => i.count > 0);
+  if (items.length === 0) {
+    // Fallback: show all craftable items
+    items = Object.values(itemsMap);
+  }
+
+  if (search) {
+    items = items.filter(i => i.id.toLowerCase().includes(search) ||
+                               (i.name||'').toLowerCase().includes(search));
+  }
+
+  items.sort((a, b) => (b.count||0) - (a.count||0) || a.id.localeCompare(b.id));
+  items = items.slice(0, 200);
+
+  panel.innerHTML = '';
+  items.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'storage-item';
+    el.title = item.id + (item.count ? ` (${item.count})` : '');
+    el.draggable = true;
+    el.innerHTML = `
+      <div class="storage-item-icon">${itemImg(item.id)}</div>
+      ${item.count > 0 ? `<div class="storage-item-count">${fmtCount(item.count)}</div>` : ''}
+      <div class="storage-item-name">${(item.name||item.id.split(':')[1]||item.id).slice(0,9)}</div>`;
+
+    // Drag start
+    el.addEventListener('dragstart', e => {
+      dragItemId = item.id;
+      e.dataTransfer.effectAllowed = 'copy';
+      el.style.opacity = '0.5';
+    });
+    el.addEventListener('dragend', () => { el.style.opacity = ''; dragItemId = null; });
+
+    // Click also selects (for touch / no-drag)
+    el.addEventListener('click', () => openClickPicker(item.id));
+
+    panel.appendChild(el);
+  });
+}
+
+function fmtCount(n) {
+  if (n >= 1000000) return (n/1000000).toFixed(1)+'M';
+  if (n >= 1000)    return (n/1000).toFixed(1)+'K';
+  return String(n);
+}
+
+// When user clicks a storage item → select which slot to put it in
+let pendingClickItem = null;
+function openClickPicker(itemId) {
+  pendingClickItem = itemId;
+  showToast(`Selected: ${itemId.split(':')[1]} — now click a recipe slot`, 'success');
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Craft Grid
+// ─────────────────────────────────────────────────────────────────────────
 function buildGrid() {
   const g = document.getElementById('craftGrid');
   g.innerHTML = '';
@@ -175,10 +238,27 @@ function buildGrid() {
     slot.className = 'craft-slot';
     slot.dataset.idx = i;
     slot.innerHTML = `<span class="slot-num">${i+1}</span>`;
-    slot.addEventListener('click', () => openItemPicker(i, false));
-    slot.addEventListener('contextmenu', e => { e.preventDefault(); clearSlot(i); });
+
+    // Drop target
+    slot.addEventListener('dragover',  e => { e.preventDefault(); e.dataTransfer.dropEffect='copy'; slot.classList.add('drag-over'); });
+    slot.addEventListener('dragleave', () => slot.classList.remove('drag-over'));
+    slot.addEventListener('drop',      e => { e.preventDefault(); slot.classList.remove('drag-over'); if (dragItemId) setSlot(i, dragItemId); });
+
+    // Click: either place pending item or open search popup
+    slot.addEventListener('click', () => {
+      if (pendingClickItem) { setSlot(i, pendingClickItem); pendingClickItem = null; }
+      else openSlotPicker(i);
+    });
+
+    // Right-click clears
+    slot.addEventListener('contextmenu', e => { e.preventDefault(); setSlot(i, null); });
     g.appendChild(slot);
   }
+  refreshGrid();
+}
+
+function setSlot(i, itemId) {
+  builderGrid[i] = itemId;
   refreshGrid();
 }
 
@@ -186,59 +266,62 @@ function refreshGrid() {
   for (let i = 0; i < 9; i++) {
     const el = document.querySelector(`#craftGrid .craft-slot[data-idx="${i}"]`);
     if (!el) continue;
-    const item = builderGrid[i];
-    if (item) {
-      el.classList.add('filled');
-      el.innerHTML = `<span class="slot-num">${i+1}</span>${renderItemIcon(item, '100%')}`;
+    const id = builderGrid[i];
+    el.classList.toggle('filled', !!id);
+    if (id) {
+      el.innerHTML = `<span class="slot-num">${i+1}</span>${itemImg(id)}`;
     } else {
-      el.classList.remove('filled');
       el.innerHTML = `<span class="slot-num">${i+1}</span>`;
     }
+    // re-attach drag events (innerHTML wipes them on parent)
+    el.addEventListener('dragover',  e => { e.preventDefault(); el.classList.add('drag-over'); });
+    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+    el.addEventListener('drop',      e => { e.preventDefault(); el.classList.remove('drag-over'); if (dragItemId) setSlot(i, dragItemId); });
   }
   updatePreview();
-}
-
-function clearSlot(i) {
-  builderGrid[i] = null;
-  refreshGrid();
 }
 
 function onTypeChange() {
   const t = document.getElementById('recipeType').value;
   const isP = t.startsWith('create:') && t !== 'create:mechanical_crafting';
-  document.getElementById('gridSection').style.display = isP ? 'none' : '';
-  document.getElementById('pressSection').style.display = isP ? '' : 'none';
+  document.getElementById('gridSection').style.display   = isP ? 'none' : '';
+  document.getElementById('pressSection').style.display  = isP ? '' : 'none';
   isPress = isP;
   updatePreview();
 }
 
 function updatePreview() {
-  const type = document.getElementById('recipeType').value;
+  const type  = document.getElementById('recipeType').value;
   const count = document.getElementById('resultCount').value;
-  const result = builderResult;
-  const grid = isPress ? null : builderGrid;
-
-  let html = '';
-  if (!result) { document.getElementById('recipePreview').innerHTML = '<span style="color:var(--parchment-faint)">Set result item</span>'; return; }
-
-  html += `<div style="margin-bottom:6px"><span style="color:var(--parchment-faint)">Type: </span><span style="color:var(--brass-bright)">${type}</span></div>`;
-  html += `<div><span style="color:var(--parchment-faint)">Result: </span><span style="color:var(--parchment)">${result} ×${count}</span></div>`;
-
-  if (!isPress) {
-    const filled = builderGrid.filter(Boolean).length;
-    html += `<div style="margin-top:4px"><span style="color:var(--parchment-faint)">Ingredients: </span><span style="color:var(--parchment)">${filled} slots</span></div>`;
-  } else {
-    const ing = builderGrid[4];
-    html += `<div style="margin-top:4px"><span style="color:var(--parchment-faint)">Input: </span><span style="color:var(--parchment)">${ing||'not set'}</span></div>`;
+  if (!builderResult) {
+    document.getElementById('recipePreview').innerHTML =
+      '<span style="color:var(--parchment-faint)">Set result item →</span>';
+    return;
   }
-
-  document.getElementById('recipePreview').innerHTML = html;
+  const filled = isPress ? (builderGrid[4] ? 1 : 0) : builderGrid.filter(Boolean).length;
+  document.getElementById('recipePreview').innerHTML = `
+    <div style="margin-bottom:4px"><span style="color:var(--parchment-faint)">Type: </span><span style="color:var(--brass-bright)">${type}</span></div>
+    <div><span style="color:var(--parchment-faint)">Result: </span><span style="color:var(--parchment)">${builderResult} ×${count}</span></div>
+    <div style="margin-top:4px"><span style="color:var(--parchment-faint)">Slots: </span><span style="color:var(--parchment)">${filled}</span></div>`;
 }
 
-// ── Item picker ───────────────────────────────────────────────────────────
 
-function openItemPicker(slotIdx) {
+// ─────────────────────────────────────────────────────────────────────────
+// Slot picker popup (search all items to place in a slot)
+// ─────────────────────────────────────────────────────────────────────────
+let pickerTarget = null;
+
+function openSlotPicker(slotIdx) {
   pickerTarget = slotIdx;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('itemPopup').classList.add('show');
+  document.getElementById('popupSearch').value = '';
+  filterPopup();
+  setTimeout(() => document.getElementById('popupSearch').focus(), 50);
+}
+
+function openResultPicker() {
+  pickerTarget = -1;
   document.getElementById('overlay').classList.add('show');
   document.getElementById('itemPopup').classList.add('show');
   document.getElementById('popupSearch').value = '';
@@ -252,127 +335,105 @@ function closeItemPicker() {
 }
 
 function filterPopup() {
-  const q = document.getElementById('popupSearch').value.toLowerCase().trim();
+  const q    = document.getElementById('popupSearch').value.toLowerCase().trim();
   const list = document.getElementById('popupList');
 
-  // Search across ALL items - sort: query match in name first, then id
-  let filtered = allItems;
+  let items = Object.values(itemsMap);
   if (q) {
-    filtered = allItems.filter(i =>
-      i.id.toLowerCase().includes(q) || (i.name||'').toLowerCase().includes(q)
-    );
-    // sort: name starts with query first
-    filtered.sort((a, b) => {
+    items = items.filter(i => i.id.toLowerCase().includes(q) || (i.name||'').toLowerCase().includes(q));
+    items.sort((a,b) => {
       const an = (a.name||'').toLowerCase(), bn = (b.name||'').toLowerCase();
-      const as = an.startsWith(q) ? 0 : 1;
-      const bs = bn.startsWith(q) ? 0 : 1;
-      return as - bs || an.localeCompare(bn);
+      return (an.startsWith(q)?0:1) - (bn.startsWith(q)?0:1) || an.localeCompare(bn);
     });
+  } else {
+    // Default: in-storage items first, then rest alphabetically
+    items.sort((a,b) => (b.count||0)-(a.count||0) || a.id.localeCompare(b.id));
   }
 
-  filtered = filtered.slice(0, 100);
+  items = items.slice(0, 120);
   list.innerHTML = '';
 
-  if (filtered.length === 0) {
-    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--parchment-faint);font-family:\'JetBrains Mono\',monospace;font-size:11px">No items found</div>';
+  if (!items.length) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--parchment-faint);font-size:11px;font-family:\'JetBrains Mono\',monospace">Nothing found</div>';
     return;
   }
 
-  filtered.forEach(item => {
-    const el = document.createElement('div');
+  items.forEach(item => {
+    const el  = document.createElement('div');
     el.className = 'popup-item';
-    const tex = item.texture;
     el.innerHTML = `
-      <div class="popup-item-icon">
-        ${tex ? `<img src="/${tex}" onerror="this.parentElement.innerHTML='<span style=font-size:16px>📦</span>'">` : '<span style="font-size:16px">📦</span>'}
-      </div>
+      <div class="popup-item-icon">${itemImg(item.id, '32px')}</div>
       <div>
         <div class="popup-item-name">${item.name || item.id.split(':')[1] || item.id}</div>
-        <div class="popup-item-id">${item.id}</div>
+        <div class="popup-item-id">${item.id}${item.count>0?' · '+fmtCount(item.count):''}</div>
       </div>`;
-    el.addEventListener('click', () => selectItem(item.id));
+    el.addEventListener('click', () => pickItem(item.id));
     list.appendChild(el);
   });
 }
 
-function getTexture(itemId) {
-  return craftableMap[itemId]?.texture || null;
-}
-
-function renderItemIcon(itemId, size) {
-  const tex = getTexture(itemId);
-  const s = size || '100%';
-  if (tex) return `<img src="/${tex}" style="width:${s};height:${s};image-rendering:pixelated" onerror="this.parentElement.innerHTML='<span style=font-size:18px>📦</span>'">`;
-  return `<span style="font-size:18px">📦</span>`;
-}
-
-function selectItem(itemId) {
+function pickItem(itemId) {
   closeItemPicker();
   if (pickerTarget === -1) {
     builderResult = itemId;
     const el = document.getElementById('resultSlot');
-    el.innerHTML = renderItemIcon(itemId, '100%');
+    el.innerHTML = itemImg(itemId);
     el.classList.add('filled');
-  } else {
-    builderGrid[pickerTarget] = itemId;
+  } else if (pickerTarget !== null) {
     if (pickerTarget === 4 && isPress) {
+      builderGrid[4] = itemId;
       const el = document.getElementById('pressSlot');
-      el.innerHTML = renderItemIcon(itemId, '100%');
+      el.innerHTML = itemImg(itemId);
+    } else {
+      setSlot(pickerTarget, itemId);
     }
-    refreshGrid();
   }
   updatePreview();
 }
 
-// ── Save recipe ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// Save recipe
+// ─────────────────────────────────────────────────────────────────────────
 async function saveRecipe() {
   if (!builderResult) { showToast('Set result item first', 'error'); return; }
-
-  const type = document.getElementById('recipeType').value;
+  const type  = document.getElementById('recipeType').value;
   const count = parseInt(document.getElementById('resultCount').value) || 1;
-  const name = document.getElementById('recipeName').value.trim();
+  const name  = document.getElementById('recipeName').value.trim();
+  const grid  = isPress ? builderGrid.map((v,i) => i===4?v:null) : [...builderGrid];
 
-  // for press recipes, ingredient is in slot 4 (index 4)
-  const grid = isPress
-    ? builderGrid.map((v,i) => i === 4 ? v : null)
-    : [...builderGrid];
+  if (!grid.some(Boolean)) { showToast('Add at least one ingredient', 'error'); return; }
 
-  const filledSlots = grid.filter(Boolean).length;
-  if (filledSlots === 0) { showToast('Add at least one ingredient', 'error'); return; }
-
-  try {
-    const r = await fetch(`${API}/api/custom-recipes`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ resultItem: builderResult, resultCount: count, recipeType: type, grid, name })
-    });
-    const d = await r.json();
-    if (d.success) {
-      showToast(`Recipe saved: ${count}x ${builderResult}`, 'success');
-      // reset builder
-      builderGrid = new Array(9).fill(null);
-      builderResult = null;
-      document.getElementById('resultSlot').innerHTML = '<span style="font-size:24px">+</span>';
-      document.getElementById('resultSlot').classList.remove('filled');
-      document.getElementById('pressSlot').innerHTML = '<span style="font-size:20px">+</span>';
-      document.getElementById('recipeName').value = '';
-      refreshGrid();
-    } else {
-      showToast('Save failed: ' + d.message, 'error');
-    }
-  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+  const r = await fetch(`${API}/api/custom-recipes`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ resultItem: builderResult, resultCount: count, recipeType: type, grid, name })
+  });
+  const d = await r.json();
+  if (d.success) {
+    showToast(`Saved: ${count}× ${builderResult}`, 'success');
+    builderGrid   = new Array(9).fill(null);
+    builderResult = null;
+    document.getElementById('resultSlot').innerHTML  = '<span style="font-size:24px">+</span>';
+    document.getElementById('resultSlot').classList.remove('filled');
+    document.getElementById('pressSlot').innerHTML   = '<span style="font-size:20px">+</span>';
+    document.getElementById('recipeName').value      = '';
+    refreshGrid();
+  } else {
+    showToast('Failed: ' + d.message, 'error');
+  }
 }
 
-// ── Render recipes list ───────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// Render: Custom Recipes list
+// ─────────────────────────────────────────────────────────────────────────
 function renderRecipes() {
-  const q = (document.getElementById('recipeSearch')?.value || '').toLowerCase();
+  const q    = (document.getElementById('recipeSearch')?.value || '').toLowerCase();
   const list = document.getElementById('recipeList');
   const filtered = customRecipes.filter(r =>
-    !q || r.resultItem.toLowerCase().includes(q) || r.name?.toLowerCase().includes(q)
-  );
+    !q || r.resultItem.toLowerCase().includes(q) || (r.name||'').toLowerCase().includes(q));
 
-  if (filtered.length === 0) {
-    list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--parchment-faint);font-family:\'JetBrains Mono\',monospace;font-size:12px">No custom recipes yet. Use the builder to create one.</div>';
+  if (!filtered.length) {
+    list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--parchment-faint);font-family:\'JetBrains Mono\',monospace;font-size:12px">No custom recipes. Use Builder tab.</div>';
     return;
   }
 
@@ -381,127 +442,113 @@ function renderRecipes() {
     const el = document.createElement('div');
     el.className = 'recipe-card';
 
-    // mini grid
     let miniGrid = '';
     if (r.grid) {
       miniGrid = '<div class="recipe-mini-grid">';
       for (let i = 0; i < 9; i++) {
         const slot = r.grid[i];
-        const stex = slot ? getTexture(slot) : null;
-        miniGrid += `<div class="recipe-mini-slot">${stex ? `<img src="/${stex}" onerror="this.style.display='none'">` : (slot ? '<span style="font-size:8px;color:var(--parchment-faint)">·</span>' : '')}</div>`;
+        miniGrid += `<div class="recipe-mini-slot">${slot ? itemImg(slot, '18px') : ''}</div>`;
       }
       miniGrid += '</div>';
     }
 
     el.innerHTML = `
-      <div class="recipe-card-icon">${renderItemIcon(r.resultItem, '100%')}</div>
+      <div class="recipe-card-icon">${itemImg(r.resultItem)}</div>
       <div class="recipe-card-info">
         <div class="recipe-card-name">${r.name || r.resultItem.split(':')[1]}</div>
-        <div class="recipe-card-id">${r.resultItem} × ${r.resultCount || 1}</div>
+        <div class="recipe-card-id">${r.resultItem} × ${r.resultCount||1}</div>
         <span class="recipe-card-type">${r.recipeType}</span>
       </div>
       ${miniGrid}
       <div style="display:flex;flex-direction:column;gap:6px">
         <button class="btn btn-primary btn-sm" onclick="craftCustom('${r.resultItem}')">⚙ Craft</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteRecipe('${encodeURIComponent(r.id)}')">✕ Delete</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteRecipe('${encodeURIComponent(r.id)}')">✕</button>
       </div>`;
     list.appendChild(el);
   });
 }
 
-async function deleteRecipe(encodedId) {
-  if (!confirm('Delete this recipe?')) return;
-  const r = await fetch(`${API}/api/custom-recipes/${encodedId}`, { method: 'DELETE' });
-  const d = await r.json();
-  if (d.success) showToast('Recipe deleted', 'success');
+async function deleteRecipe(enc) {
+  if (!confirm('Delete?')) return;
+  const r = await fetch(`${API}/api/custom-recipes/${enc}`, { method: 'DELETE' });
+  if ((await r.json()).success) showToast('Deleted', 'success');
   else showToast('Delete failed', 'error');
-  await loadCustomRecipes();
 }
 
 async function craftCustom(itemId) {
-  const amount = parseInt(prompt(`How many ${itemId}?`, '1')) || 1;
+  const amount = parseInt(prompt(`How many ${itemId.split(':')[1]}?`, '1')) || 1;
   const r = await fetch(`${API}/api/craft`, {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
+    method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ itemId, amount })
   });
   const d = await r.json();
-  if (d.success) { showToast(`Queued ${amount}x ${itemId}`, 'success'); switchTab('queue'); }
+  if (d.success) { showToast(`Queued ${amount}× ${itemId}`, 'success'); switchTab('queue'); }
   else showToast('Failed: ' + d.message, 'error');
 }
 
-// ── Render queue ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// Render: Queue
+// ─────────────────────────────────────────────────────────────────────────
 function renderQueue() {
   const tbody = document.getElementById('queueBody');
   const empty = document.getElementById('queueEmpty');
   const badge = document.getElementById('queueBadge');
   badge.textContent = craftQueue.length;
-  document.getElementById('hGear').classList.toggle('busy', craftQueue.some(j => j.status === 'crafting'));
+  document.getElementById('hGear').classList.toggle('busy', craftQueue.some(j=>j.status==='crafting'));
 
-  if (craftQueue.length === 0) {
-    tbody.innerHTML = '';
-    empty.style.display = '';
-    document.querySelector('#queueTable').style.display = 'none';
-    return;
-  }
-  empty.style.display = 'none';
-  document.querySelector('#queueTable').style.display = '';
-
+  const table = document.getElementById('queueTable');
+  if (!craftQueue.length) { tbody.innerHTML=''; empty.style.display=''; table.style.display='none'; return; }
+  empty.style.display='none'; table.style.display='';
   tbody.innerHTML = '';
   craftQueue.forEach(job => {
-    const age = job.startedAt ? Math.round((Date.now() - job.startedAt)/1000)+'s' : '—';
+    const age = job.startedAt ? Math.round((Date.now()-job.startedAt)/1000)+'s' : '—';
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><div style="width:32px;height:32px;background:var(--bg-panel-raised);border:1px solid var(--rivet);border-radius:3px;display:flex;align-items:center;justify-content:center;overflow:hidden">
-        ${renderItemIcon(job.itemId, '32px')}
-      </div></td>
+      <td><div style="width:32px;height:32px;background:var(--bg-panel-raised);border:1px solid var(--rivet);border-radius:3px;overflow:hidden;display:flex;align-items:center;justify-content:center">
+        ${itemImg(job.itemId, '32px')}</div></td>
       <td style="color:var(--parchment)">${job.itemId}</td>
       <td>×${job.amount}</td>
       <td><span class="log-status ${job.status}">${job.status.toUpperCase()}</span></td>
       <td>${age}</td>
-      <td>${job.status === 'pending' ? `<button class="btn btn-danger btn-sm" onclick="cancelJob(${job.id})">Cancel</button>` : '—'}</td>`;
+      <td>${job.status==='pending'?`<button class="btn btn-danger btn-sm" onclick="cancelJob(${job.id})">Cancel</button>`:'—'}</td>`;
     tbody.appendChild(tr);
   });
 }
 
 async function cancelJob(id) {
-  const r = await fetch(`${API}/api/queue/${id}/cancel`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
-  const d = await r.json();
-  if (d.success) showToast('Job cancelled', 'success');
+  await fetch(`${API}/api/queue/${id}/cancel`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
   await loadQueue();
 }
 
-// ── Render log ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// Render: Log
+// ─────────────────────────────────────────────────────────────────────────
 function renderLog() {
-  const list = document.getElementById('logList');
+  const list  = document.getElementById('logList');
   const badge = document.getElementById('historyBadge');
-  const q = (document.getElementById('historySearch')?.value || '').toLowerCase();
+  const q     = (document.getElementById('historySearch')?.value || '').toLowerCase();
 
   badge.textContent = craftLog.length;
   document.getElementById('logCount').textContent = craftLog.length;
 
-  let filtered = craftLog;
-  if (q) filtered = craftLog.filter(e => e.itemId?.toLowerCase().includes(q));
+  let filtered = q ? craftLog.filter(e=>e.itemId?.toLowerCase().includes(q)) : craftLog;
 
-  if (filtered.length === 0) {
-    list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--parchment-faint);font-family:\'JetBrains Mono\',monospace;font-size:12px">No craft history yet</div>';
+  if (!filtered.length) {
+    list.innerHTML='<div style="text-align:center;padding:40px;color:var(--parchment-faint);font-family:\'JetBrains Mono\',monospace;font-size:12px">No history</div>';
     return;
   }
-
   list.innerHTML = '';
-  filtered.slice(0, 100).forEach(entry => {
-    const ts = new Date(entry.completedAt || entry.failedAt || entry.cancelledAt || Date.now());
-    const timeStr = ts.toLocaleTimeString();
+  filtered.slice(0,100).forEach(entry => {
+    const ts  = new Date(entry.completedAt||entry.failedAt||entry.cancelledAt||Date.now());
     const dur = entry.durationMs ? ` · ${(entry.durationMs/1000).toFixed(1)}s` : '';
-
-    const el = document.createElement('div');
+    const el  = document.createElement('div');
     el.className = `log-entry ${entry.status}`;
     el.innerHTML = `
-      <div class="log-icon" style="overflow:hidden">${renderItemIcon(entry.itemId, '32px')}</div>
+      <div class="log-icon" style="overflow:hidden">${itemImg(entry.itemId, '32px')}</div>
       <div style="flex:1">
         <div style="color:var(--parchment);font-size:12px">${entry.itemId}</div>
-        <div style="color:var(--parchment-faint);font-size:10px">×${entry.amount} · ${timeStr}${dur}</div>
-        ${entry.error ? `<div style="color:var(--rust);font-size:10px">Error: ${entry.error}</div>` : ''}
+        <div style="color:var(--parchment-faint);font-size:10px">×${entry.amount} · ${ts.toLocaleTimeString()}${dur}</div>
+        ${entry.error?`<div style="color:var(--rust);font-size:10px">${entry.error}</div>`:''}
       </div>
       <span class="log-status ${entry.status}">${entry.status.toUpperCase()}</span>`;
     list.appendChild(el);
@@ -509,22 +556,22 @@ function renderLog() {
 }
 
 async function clearLog() {
-  if (!confirm('Clear all craft history?')) return;
-  await fetch(`${API}/api/log`, { method: 'DELETE' });
-  craftLog = [];
-  renderLog();
-  showToast('Log cleared', 'success');
+  if (!confirm('Clear all history?')) return;
+  await fetch(`${API}/api/log`,{method:'DELETE'});
+  craftLog = []; renderLog();
+  showToast('Cleared','success');
 }
 
-// ── Toast ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
+// Toast
+// ─────────────────────────────────────────────────────────────────────────
 function showToast(msg, type) {
   const c = document.getElementById('toastContainer');
   const t = document.createElement('div');
-  t.className = `toast ${type}`;
-  t.textContent = msg;
+  t.className = `toast ${type}`; t.textContent = msg;
   c.appendChild(t);
-  setTimeout(() => { t.classList.add('leaving'); setTimeout(() => t.remove(), 200); }, 3200);
+  setTimeout(()=>{ t.classList.add('leaving'); setTimeout(()=>t.remove(),200); },3200);
 }
 
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeItemPicker(); });
+document.addEventListener('keydown', e => { if (e.key==='Escape') closeItemPicker(); });
 init();
