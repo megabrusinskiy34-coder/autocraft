@@ -440,7 +440,7 @@ function runCrafterRecipe(job, grid)
                 for _ in pairs(cItems) do stillFull = true; break end
                 if not stillFull and not crafterCleared then
                     crafterCleared = true
-                    print("  Crafter cleared at "..t*0.5.."s (crafted!), waiting for hopper...")
+                    print("  Crafter cleared at "..tostring(t*0.5).."s (crafted!), waiting for hopper...")
                 end
             end
 
