@@ -500,6 +500,29 @@ function executeCraft(job)
     print("║  Amount: " .. job.amount)
     print("╚════════════════════════════════════════╝")
     
+    -- Send ALL ingredients for the full amount in one go, instead of
+    -- looping through the depot `amount` times. Each ingredient slot
+    -- gets `job.amount` copies transferred at once.
+    print("\n  Sending ingredients x" .. job.amount .. " in a single batch...")
+    
+    local craftSuccess, craftError = executeSingleCraft(job, job.amount)
+    
+    if craftSuccess then
+        print("\n╔════════════════════════════════════════╗")
+        print("║  BATCH COMPLETE")
+        print("║  Requested: " .. job.amount)
+        print("╚════════════════════════════════════════╝")
+        return true, "Sent ingredients for " .. job.amount .. "x " .. job.itemId
+    else
+        print("\n✗ Batch failed: " .. (craftError or "unknown"))
+        return false, craftError or "Batch failed"
+    end
+end
+
+-- Execute single craft (moved from executeCraft)
+function executeSingleCraft(job, multiplier)
+    multiplier = multiplier or 1
+    
     -- Step 1: Get recipe
     print("\n[STEP 1] Fetching recipe from API...")
     print("  URL: " .. API_URL .. "/api/recipes/" .. job.itemId:gsub(":", "__"))
@@ -835,7 +858,7 @@ function executeCraft(job)
         
         -- Try short name push
         success, result = pcall(function()
-            return storage.pushItems(depotShortName, slot, 1)
+            return storage.pushItems(depotShortName, slot, multiplier)
         end)
         
         if success and result and result > 0 then
@@ -844,7 +867,7 @@ function executeCraft(job)
         else
             -- Try full name push
             success, result = pcall(function()
-                return storage.pushItems(depotName, slot, 1)
+                return storage.pushItems(depotName, slot, multiplier)
             end)
             
             if success and result and result > 0 then
@@ -853,7 +876,7 @@ function executeCraft(job)
             else
                 -- Try short name pull
                 success, result = pcall(function()
-                    return depot.pullItems(storageShortName, slot, 1)
+                    return depot.pullItems(storageShortName, slot, multiplier)
                 end)
                 
                 if success and result and result > 0 then
@@ -862,7 +885,7 @@ function executeCraft(job)
                 else
                     -- Try full name pull
                     success, result = pcall(function()
-                        return depot.pullItems(storageName, slot, 1)
+                        return depot.pullItems(storageName, slot, multiplier)
                     end)
                     
                     if success and result and result > 0 then
@@ -882,13 +905,13 @@ function executeCraft(job)
                             
                             -- Try: storage pushes to buffer
                             success, result = pcall(function()
-                                return storage.pushItems(bufferShortName, slot, 1)
+                                return storage.pushItems(bufferShortName, slot, multiplier)
                             end)
                             
                             if not success or not result or result == 0 then
                                 -- Try full name
                                 success, result = pcall(function()
-                                    return storage.pushItems(bufferName, slot, 1)
+                                    return storage.pushItems(bufferName, slot, multiplier)
                                 end)
                             end
                             
@@ -903,13 +926,13 @@ function executeCraft(job)
                                 
                                 print("      Trying: buffer.pullItems('" .. storageSimpleName .. "', " .. slot .. ", 1)")
                                 success, result = pcall(function()
-                                    return buffer.pullItems(storageSimpleName, slot, 1)
+                                    return buffer.pullItems(storageSimpleName, slot, multiplier)
                                 end)
                                 
                                 if not success or not result or result == 0 then
                                     print("      Failed, trying full name...")
                                     success, result = pcall(function()
-                                        return buffer.pullItems(storageName, slot, 1)
+                                        return buffer.pullItems(storageName, slot, multiplier)
                                     end)
                                 end
                             end
@@ -932,12 +955,12 @@ function executeCraft(job)
                                     
                                     -- Try: buffer pushes to depot
                                     success, result = pcall(function()
-                                        return buffer.pushItems(depotShortName, bufferSlot, 1)
+                                        return buffer.pushItems(depotShortName, bufferSlot, multiplier)
                                     end)
                                     
                                     if not success or not result or result == 0 then
                                         success, result = pcall(function()
-                                            return buffer.pushItems(depotName, bufferSlot, 1)
+                                            return buffer.pushItems(depotName, bufferSlot, multiplier)
                                         end)
                                     end
                                     
@@ -945,12 +968,12 @@ function executeCraft(job)
                                     if not success or not result or result == 0 then
                                         print("      Push failed, trying pull...")
                                         success, result = pcall(function()
-                                            return depot.pullItems(bufferShortName, bufferSlot, 1)
+                                            return depot.pullItems(bufferShortName, bufferSlot, multiplier)
                                         end)
                                         
                                         if not success or not result or result == 0 then
                                             success, result = pcall(function()
-                                                return depot.pullItems(bufferName, bufferSlot, 1)
+                                                return depot.pullItems(bufferName, bufferSlot, multiplier)
                                             end)
                                         end
                                     end
@@ -994,156 +1017,178 @@ function executeCraft(job)
     print("\n  ✓✓✓ All " .. #itemsNeeded .. " items transferred successfully!")
     
     -- Step 5: Wait for craft
+    -- Wait time scales with the batch size (multiplier) since the
+    -- mechanical crafter needs to process `multiplier` items, not just 1.
+    local waitChecks = math.max(5, 2 * multiplier)
     print("\n[STEP 5] Waiting for craft to complete...")
-    print("  Mechanical crafters should now process the items")
-    print("  Waiting 5 seconds...")
+    print("  Mechanical press/crafters should now process the items")
+    print("  Waiting up to " .. (waitChecks * 2) .. " seconds (checks every 2s)...")
     
-    for i = 5, 1, -1 do
-        print("  " .. i .. "...")
-        sleep(1)
+    -- Wait and check periodically for the FULL requested count, not just 1
+    for i = 1, waitChecks do
+        sleep(2)
+        print("  " .. (i*2) .. "s... checking for output")
+        
+        -- Count how many of the target item have appeared across all depots
+        local foundCount = 0
+        for _, name in ipairs(peripheral.getNames()) do
+            if name:match("depot") then
+                local p = peripheral.wrap(name)
+                if p and p.list then
+                    for _, item in pairs(p.list()) do
+                        if item.name == job.itemId then
+                            foundCount = foundCount + item.count
+                        end
+                    end
+                end
+            end
+        end
+        
+        if foundCount > 0 then
+            print("  " .. foundCount .. "/" .. multiplier .. " output items detected so far")
+        end
+        
+        if foundCount >= multiplier then
+            print("  ✓ Full batch output detected!")
+            print("  Skipping remaining wait time")
+            break
+        end
     end
     
     print("  ✓ Wait complete")
     
-    -- Step 6: Check output
-    print("\n[STEP 6] Checking output...")
-    print("  Looking for output depot...")
+    -- Step 6: Check output and return to vault
+    print("\n[STEP 6] Checking ALL depots for output...")
+    print("  Looking for: " .. job.itemId)
     
-    local outputName, output = findDepot("depot_%d+$")
-    
-    if not output then
-        print("  ⚠ Output depot not found")
-        print("  Available depots:")
-        for _, name in ipairs(peripheral.getNames()) do
-            if name:match("depot") then
-                print("    - " .. name)
-            end
+    -- Find vault for return
+    local returnVault = nil
+    local returnVaultName = nil
+    for _, name in ipairs(peripheral.getNames()) do
+        if name:match("item_vault") then
+            returnVaultName = name
+            returnVault = peripheral.wrap(name)
+            print("  Found vault: " .. name)
+            break
         end
-        print("\n  Cannot verify output, but craft may have succeeded")
-        print("  Check your mechanical crafter output manually")
-    else
-        print("  ✓ Found output depot: " .. outputName)
-        
-        local outputItems = output.list()
-        local outputCount = 0
-        for _ in pairs(outputItems) do outputCount = outputCount + 1 end
-        
-        print("  Output depot contains: " .. outputCount .. " items")
-        
-        if outputCount > 0 then
-            print("  ✓ Output detected!")
+    end
+    
+    -- Find buffer chest
+    local bufferName = nil
+    local buffer = nil
+    for _, name in ipairs(peripheral.getNames()) do
+        local ptype = peripheral.getType(name)
+        if ptype == "minecraft:chest" or (name:match("chest") and not name:match("vault")) then
+            bufferName = name
+            buffer = peripheral.wrap(name)
+            print("  Found buffer: " .. name)
+            break
+        end
+    end
+    
+    print("")
+    
+    -- Check ALL depots for output
+    local foundOutput = false
+    local depotsChecked = 0
+    
+    for _, name in ipairs(peripheral.getNames()) do
+        if name:match("depot") then
+            depotsChecked = depotsChecked + 1
+            print("  Checking " .. name .. "...")
             
-            -- Find vault to return items to
-            local returnVault = nil
-            local returnVaultName = nil
-            for _, name in ipairs(peripheral.getNames()) do
-                if name:match("item_vault") then
-                    returnVaultName = name
-                    returnVault = peripheral.wrap(name)
-                    break
-                end
-            end
-            
-            for slot, item in pairs(outputItems) do
-                print("    - Slot " .. slot .. ": " .. item.name .. " x" .. item.count)
+            local p = peripheral.wrap(name)
+            if p and p.list then
+                local items = p.list()
+                local itemCount = 0
+                for _ in pairs(items) do itemCount = itemCount + 1 end
                 
-                -- Check if this is the item we wanted to craft
-                if item.name == job.itemId then
-                    print("      ✓✓✓ THIS IS THE CRAFTED ITEM!")
-                end
+                print("    Contains " .. itemCount .. " items")
                 
-                -- Try to return to vault
-                if returnVault and returnVaultName then
-                    print("      Returning to vault...")
+                for slot, item in pairs(items) do
+                    print("    Slot " .. slot .. ": " .. item.name .. " x" .. item.count)
                     
-                    local vaultShortName = returnVaultName:match("item_vault_%d+") or returnVaultName:match("([^:]+)$")
-                    local depotShortName = outputName:match("depot_%d+") or outputName:match("([^:]+)$")
-                    
-                    -- METHOD 1: Try direct transfer (vault pulls from depot)
-                    local success, moved = pcall(function()
-                        return returnVault.pullItems(depotShortName, slot, item.count)
-                    end)
-                    
-                    if not success or not moved or moved == 0 then
-                        -- Try: depot pushes to vault
-                        success, moved = pcall(function()
-                            return output.pushItems(vaultShortName, slot, item.count)
-                        end)
+                    -- Check if this is the crafted item
+                    if item.name == job.itemId then
+                        print("      ✓✓✓ THIS IS THE CRAFTED ITEM!")
+                        foundOutput = true
                     end
                     
-                    -- METHOD 2: If direct failed, use buffer chest
-                    if not success or not moved or moved == 0 then
-                        print("      Direct transfer failed, using buffer...")
+                    -- Try to return to vault via buffer
+                    if returnVault and buffer and bufferName and returnVaultName then
+                        print("    Returning to vault via buffer...")
                         
-                        -- Find buffer chest
-                        local bufferName = nil
-                        local buffer = nil
-                        for _, name in ipairs(peripheral.getNames()) do
-                            local ptype = peripheral.getType(name)
-                            if ptype == "minecraft:chest" or (name:match("chest") and not name:match("vault")) then
-                                bufferName = name
-                                buffer = peripheral.wrap(name)
-                                break
-                            end
+                        local depotShort = name:match("depot_%d+") or name:match("([^:]+)$")
+                        local bufferShort = bufferName:match("chest_%d+") or bufferName:match("([^:]+)$")
+                        local vaultShort = returnVaultName:match("item_vault_%d+") or returnVaultName:match("([^:]+)$")
+                        
+                        -- Step 1: Buffer pulls from depot
+                        print("      Step 1: " .. depotShort .. " -> " .. bufferShort)
+                        
+                        -- Try short name first
+                        local success, moved = pcall(function()
+                            return buffer.pullItems(depotShort, slot, item.count)
+                        end)
+                        
+                        -- If failed, try full name
+                        if not success or not moved or moved == 0 then
+                            print("        Short name failed, trying full: " .. name)
+                            success, moved = pcall(function()
+                                return buffer.pullItems(name, slot, item.count)
+                            end)
                         end
                         
-                        if buffer and bufferName then
-                            local bufferShortName = bufferName:match("chest_%d+") or bufferName:match("([^:]+)$")
+                        if success and moved and moved > 0 then
+                            print("      ✓ Moved to buffer: " .. moved)
                             
-                            -- Step 1: Depot -> Buffer (buffer pulls from depot)
-                            success, moved = pcall(function()
-                                return buffer.pullItems(depotShortName, slot, item.count)
-                            end)
+                            -- Find in buffer
+                            local bufferSlot = nil
+                            for s, i in pairs(buffer.list()) do
+                                if i.name == item.name then
+                                    bufferSlot = s
+                                    break
+                                end
+                            end
                             
-                            if success and moved and moved > 0 then
-                                print("      ✓ Moved to buffer: " .. moved)
+                            if bufferSlot then
+                                -- Step 2: Vault pulls from buffer
+                                print("      Step 2: " .. bufferShort .. " -> " .. vaultShort)
                                 
-                                -- Find item in buffer
-                                local bufferSlot = nil
-                                for s, i in pairs(buffer.list()) do
-                                    if i.name == item.name then
-                                        bufferSlot = s
-                                        break
-                                    end
+                                -- Try short name first
+                                success, moved = pcall(function()
+                                    return returnVault.pullItems(bufferShort, bufferSlot, item.count)
+                                end)
+                                
+                                -- If failed, try full name
+                                if not success or not moved or moved == 0 then
+                                    print("        Short name failed, trying full: " .. bufferName)
+                                    success, moved = pcall(function()
+                                        return returnVault.pullItems(bufferName, bufferSlot, item.count)
+                                    end)
                                 end
                                 
-                                if bufferSlot then
-                                    -- Step 2: Buffer -> Vault (vault pulls from buffer)
-                                    success, moved = pcall(function()
-                                        return returnVault.pullItems(bufferShortName, bufferSlot, item.count)
-                                    end)
-                                    
-                                    if success and moved and moved > 0 then
-                                        print("      ✓ Returned " .. moved .. " to vault")
-                                    else
-                                        print("      ⚠ Could not move from buffer to vault")
-                                    end
+                                if success and moved and moved > 0 then
+                                    print("      ✓ Returned " .. moved .. " to vault!")
                                 else
-                                    print("      ⚠ Item not found in buffer")
+                                    print("      ⚠ Could not move from buffer to vault")
                                 end
                             else
-                                print("      ⚠ Could not move to buffer")
+                                print("      ⚠ Item not found in buffer")
                             end
                         else
-                            print("      ⚠ No buffer chest found")
+                            print("      ⚠ Could not move to buffer: " .. tostring(moved))
                         end
                     else
-                        if success and moved and moved > 0 then
-                            print("      ✓ Returned " .. moved .. " to vault")
-                        end
+                        print("    ⚠ Missing vault or buffer for return")
                     end
-                else
-                    print("      ⚠ No vault found for return")
                 end
             end
-        else
-            print("  ⚠ No items in output depot")
-            print("  Possible reasons:")
-            print("    - Craft is still processing")
-            print("    - Items went to different location")
-            print("    - Mechanical crafter configuration issue")
-            print("    - Recipe failed to execute")
         end
+    end
+    
+    if not foundOutput then
+        print("  ⚠ Crafted item not found in any depot")
+        print("  Check mechanical crafters and output location")
     end
     
     print("\n╔════════════════════════════════════════╗")

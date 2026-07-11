@@ -278,7 +278,7 @@ function showItemDetails(item) {
             </div>
             
             <button class="craft-btn" ${!isCraftable ? 'disabled' : ''} onclick="openCraftModal('${item.id}')">
-                ${isCraftable ? '⚙️ Craft Item' : '❌ Not Craftable'}
+                ${isCraftable ? '⚙ Craft Item' : 'Not Craftable'}
             </button>
         </div>
     `;
@@ -287,7 +287,13 @@ function showItemDetails(item) {
 function renderQueue() {
     const queueList = document.getElementById('queueList');
     const queueCount = document.getElementById('queueCount');
-    
+    const headerGear = document.getElementById('headerGear');
+
+    const hasActiveJob = craftingQueue.some(job => job.status === 'crafting');
+    if (headerGear) {
+        headerGear.classList.toggle('busy', hasActiveJob);
+    }
+
     if (craftingQueue.length === 0) {
         queueList.innerHTML = '<div class="queue-empty">No crafting jobs</div>';
         queueCount.textContent = '0 active';
@@ -304,14 +310,16 @@ function renderQueue() {
         }
         
         const texture = craftableItems[job.itemId]?.texture;
+        const isCrafting = job.status === 'crafting';
         
         item.innerHTML = `
             <div class="queue-icon">
                 ${texture ? `<img src="/textures/${texture}">` : '📦'}
+                ${isCrafting ? '<span class="mini-cog">⚙</span>' : ''}
             </div>
             <div class="queue-info">
                 <div class="queue-item-name">${job.itemId.split(':')[1] || job.itemId}</div>
-                <div class="queue-status">${job.status.toUpperCase()} - ${job.amount}x</div>
+                <div class="queue-status">${job.status.toUpperCase()} · ${job.amount}x</div>
             </div>
             ${job.status === 'pending' ? `<button class="queue-cancel-btn" onclick="cancelCraft(${job.id})">✕</button>` : ''}
         `;
@@ -371,7 +379,7 @@ async function openCraftModal(itemId) {
     const modal = document.getElementById('craftModal');
     const body = document.getElementById('craftModalBody');
     
-    body.innerHTML = '<div style="text-align:center;padding:40px;">Loading recipes...</div>';
+    body.innerHTML = '<div class="modal-loading">Loading recipe data...</div>';
     modal.classList.add('show');
     
     try {
@@ -380,7 +388,7 @@ async function openCraftModal(itemId) {
         const data = await response.json();
         
         if (!data.recipes || data.recipes.length === 0) {
-            body.innerHTML = '<div style="text-align:center;padding:40px;color:#e74c3c;">No recipes found</div>';
+            body.innerHTML = '<div class="modal-error">No recipes found for this item</div>';
             return;
         }
         
@@ -388,31 +396,26 @@ async function openCraftModal(itemId) {
         const texture = craftableItems[itemId]?.texture;
         
         body.innerHTML = `
-            <div style="text-align:center;margin-bottom:20px;">
-                <div style="width:96px;height:96px;margin:0 auto 15px;background:#2d3748;border-radius:8px;display:flex;align-items:center;justify-content:center;">
-                    ${texture ? `<img src="/textures/${texture}" style="width:100%;height:100%;image-rendering:pixelated;">` : '📦'}
-                </div>
-                <h3 style="color:#4a90e2;margin-bottom:5px;">${itemId.split(':')[1] || itemId}</h3>
-                <p style="color:#707070;font-size:12px;">${itemId}</p>
+            <div class="modal-icon-frame">
+                ${texture ? `<img src="/textures/${texture}" style="width:100%;height:100%;image-rendering:pixelated;">` : '📦'}
+            </div>
+            <div class="modal-item-name">${itemId.split(':')[1] || itemId}</div>
+            <div class="modal-item-id">${itemId}</div>
+            
+            <div class="modal-recipe-box">
+                <div class="rlabel">Recipe Type</div>
+                <div class="rvalue">${recipe.type}</div>
             </div>
             
-            <div style="background:#0f1419;padding:15px;border-radius:6px;margin-bottom:20px;">
-                <div style="color:#a0a0a0;font-size:13px;margin-bottom:5px;">Recipe Type:</div>
-                <div style="color:#4a90e2;font-weight:600;">${recipe.type}</div>
-            </div>
-            
-            <div style="margin-bottom:20px;">
-                <label style="display:block;color:#a0a0a0;font-size:13px;margin-bottom:8px;">Amount:</label>
-                <input type="number" id="craftAmount" value="1" min="1" max="64" 
-                    style="width:100%;padding:10px;background:#0f1419;border:2px solid #2d3748;border-radius:6px;color:#e0e0e0;font-size:14px;">
-            </div>
+            <label class="modal-amount-label">Amount</label>
+            <input type="number" id="craftAmount" class="modal-amount-input" value="1" min="1" max="64">
             
             <button onclick="submitCraft('${itemId}')" class="craft-btn">
-                ⚙️ Start Crafting
+                ⚙ Start Crafting
             </button>
         `;
     } catch (error) {
-        body.innerHTML = '<div style="text-align:center;padding:40px;color:#e74c3c;">Error loading recipe</div>';
+        body.innerHTML = '<div class="modal-error">Error loading recipe</div>';
     }
 }
 
@@ -451,8 +454,16 @@ function formatCount(count) {
 }
 
 function showNotification(message, type) {
-    // TODO: Implement toast notification
-    console.log(`[${type.toUpperCase()}] ${message}`);
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+
+    setTimeout(() => {
+        toast.classList.add('leaving');
+        setTimeout(() => toast.remove(), 200);
+    }, 3200);
 }
 
 // Close modal on escape

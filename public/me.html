@@ -11,8 +11,17 @@
         <!-- Header -->
         <div class="me-header">
             <div class="me-title">
-                <span class="me-icon">⚡</span>
-                <h1>ME TERMINAL</h1>
+                <div class="gear-wrap">
+                    <svg class="gear-icon" id="headerGear" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" stroke="#c9932e" stroke-width="1.6"/>
+                        <path d="M12 1.5v3M12 19.5v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1.5 12h3M19.5 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"
+                              stroke="#c9932e" stroke-width="1.6" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1>ME TERMINAL</h1>
+                    <span class="subtitle">CREATE AUTOCRAFT INTERFACE</span>
+                </div>
             </div>
             <div class="me-status">
                 <div class="status-indicator" id="statusIndicator">
@@ -20,15 +29,17 @@
                     <span id="statusText">OFFLINE</span>
                 </div>
                 <div class="me-stats">
-                    <span id="itemCount">0</span> items | 
-                    <span id="storageCount">0</span> storage units
+                    <span class="stat-num" id="itemCount">0</span> items ·
+                    <span class="stat-num" id="storageCount">0</span> storage units
                 </div>
             </div>
         </div>
 
         <!-- Search Bar -->
         <div class="me-search">
-            <input type="text" id="searchInput" placeholder="Search items..." autocomplete="off">
+            <div class="search-input-wrap">
+                <input type="text" id="searchInput" placeholder="Search items..." autocomplete="off">
+            </div>
             <div class="search-filters">
                 <button class="filter-btn active" data-filter="all">All</button>
                 <button class="filter-btn" data-filter="create">Create</button>
@@ -65,7 +76,7 @@
         <!-- Crafting Queue -->
         <div class="crafting-queue">
             <div class="queue-header">
-                <span>⚙️ Crafting Queue</span>
+                <span>⚙ Crafting Queue</span>
                 <span class="queue-count" id="queueCount">0 active</span>
             </div>
             <div class="queue-list" id="queueList">
@@ -86,6 +97,9 @@
             </div>
         </div>
     </div>
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer"></div>
 
     <script src="me.js"></script>
 </body>
