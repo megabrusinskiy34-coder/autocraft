@@ -40,19 +40,37 @@ async function init() {
 // ─────────────────────────────────────────────────────────────────────────
 function texUrl(itemId) {
   const item = itemsMap[itemId];
-  if (item && item.texture) return '/' + item.texture;
+  // Use stored texture path OR guess it from item id
+  const tex = item?.texture;
+  if (tex) return '/' + tex;
+  // Fallback: guess standard path namespace__name.png
+  const ns   = itemId?.split(':')[0];
+  const name = itemId?.split(':')[1];
+  if (ns && name) return `/textures/${ns}__${name}.png`;
   return null;
 }
 
 function itemImg(itemId, size) {
   const url = texUrl(itemId);
-  const sz  = size || '100%';
+  const sz  = size ? `width:${size};height:${size}` : 'width:100%;height:100%';
   if (url) {
-    return `<img src="${url}" style="width:${sz};height:${sz};image-rendering:pixelated;display:block"
-      onerror="this.style.display='none';this.nextSibling.style.display='flex'">
-      <span style="display:none;width:100%;height:100%;align-items:center;justify-content:center;font-size:14px">📦</span>`;
+    const img = document.createElement('img');
+    img.src   = url;
+    img.style.cssText = sz + ';image-rendering:pixelated;display:block';
+    img.addEventListener('error', function() {
+      this.style.display = 'none';
+      const span = document.createElement('span');
+      span.style.cssText = 'display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:14px';
+      span.textContent = '📦';
+      this.parentElement && this.parentElement.appendChild(span);
+    });
+    // return as wrapper div that JS can insert
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden';
+    wrap.appendChild(img);
+    return wrap.outerHTML;
   }
-  return `<span style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:14px">📦</span>`;
+  return '<span style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:14px">📦</span>';
 }
 
 // ─────────────────────────────────────────────────────────────────────────

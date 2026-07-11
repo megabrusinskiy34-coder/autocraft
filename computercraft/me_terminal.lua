@@ -345,9 +345,14 @@ function runCrafterRecipe(job, grid)
 
         -- Redstone pulse → crafter fires
         print("  Redstone pulse ("..REDSTONE_SIDE..")...")
-        redstone.setOutput(REDSTONE_SIDE, true)
-        sleep(0.4)
-        redstone.setOutput(REDSTONE_SIDE, false)
+        local rsOk, rsErr = pcall(function()
+            redstone.setOutput(REDSTONE_SIDE, true)
+        end)
+        if not rsOk then
+            print("  [WARN] redstone.setOutput failed: "..tostring(rsErr))
+        end
+        sleep(0.5)
+        pcall(function() redstone.setOutput(REDSTONE_SIDE, false) end)
 
         -- Wait up to 5s for result in barrel_1
         local got = false
@@ -518,42 +523,53 @@ end
 -- Event loop  (parallel tasks)
 -- ══════════════════════════════════════════════════════════════════════════
 
--- Task 1: inventory sync — fires on timer, no sleep polling
+-- Shared timer registry so tasks don't steal each other's timers
+local timerOwner = {}  -- timerId -> "sync" | "craft"
+
+-- Task 1: inventory sync
 function taskInventorySync()
-    -- send immediately on start
     local inv, stats = scanInventory()
     lastOnline = pcall(function() pushInventory(inv, stats) end)
     lastStats  = stats
     redraw()
 
     while true do
-        -- Use os.startTimer and wait for that specific timer event
-        local timerId = os.startTimer(SYNC_INTERVAL)
+        local tid = os.startTimer(SYNC_INTERVAL)
+        timerOwner[tid] = "sync"
         while true do
             local ev, id = os.pullEvent("timer")
-            if id == timerId then break end
+            if timerOwner[id] == "sync" then
+                timerOwner[id] = nil; break
+            end
+            -- not ours — put it back by re-firing immediately
+            -- (we can't re-queue, so just ignore and keep waiting)
         end
         local inv2, stats2 = scanInventory()
-        lastStats = stats2
-        local ok = pcall(function() pushInventory(inv2, stats2) end)
-        lastOnline = ok
+        lastStats  = stats2
+        lastOnline = pcall(function() pushInventory(inv2, stats2) end)
         redraw()
     end
 end
 
--- Task 2: craft queue poller — uses short timer, processes one job at a time
+-- Task 2: craft queue poller
 function taskCraftQueue()
+    -- Small initial delay so sync task goes first
+    sleep(1)
+
     while true do
-        local timerId = os.startTimer(3)  -- check every 3 seconds
+        local tid = os.startTimer(3)
+        timerOwner[tid] = "craft"
         while true do
             local ev, id = os.pullEvent("timer")
-            if id == timerId then break end
+            if timerOwner[id] == "craft" then
+                timerOwner[id] = nil; break
+            end
         end
 
         local job = getNextJob()
         if job then
             term.setTextColor(colors.orange)
-            print("\n=== CRAFT JOB #"..job.id.." ==="  )
+            print("\n=== CRAFT JOB #"..job.id.." ===")
             print("    "..job.amount.."x "..job.itemId)
             term.setTextColor(colors.white)
 
@@ -574,15 +590,14 @@ function taskCraftQueue()
     end
 end
 
--- Task 3: keyboard input (Ctrl+T handled by CC itself, but we can catch other keys)
+-- Task 3: keyboard (R = force rescan)
 function taskInput()
     while true do
-        local ev, key = os.pullEvent("key")
-        -- r = manual redraw/rescan
+        local _, key = os.pullEvent("key")
         if key == keys.r then
             local inv, stats = scanInventory()
             lastStats = stats
-            pushInventory(inv, stats)
+            pcall(function() pushInventory(inv, stats) end)
             redraw()
         end
     end

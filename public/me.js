@@ -217,26 +217,18 @@ function createItemCard(item) {
     const icon = document.createElement('div');
     icon.className = 'item-icon';
     
-    // Get texture from craftable items
+    // Build texture URL — try craftableItems first, then guess path
     const texture = craftableItems[item.id]?.texture;
-    if (texture) {
+    const texPath = texture
+        ? '/' + texture
+        : guessTexPath(item.id);
+
+    if (texPath) {
         const img = document.createElement('img');
-        // texture already includes 'textures/' prefix from item_textures.json
-        img.src = `/${texture}`;
+        img.src = texPath;
         img.onerror = () => { 
-            // Try minecraft wiki fallback for vanilla items
-            const ns = item.namespace || 'minecraft';
-            const itemName = (item.id || '').split(':')[1] || '';
-            if (ns === 'minecraft') {
-                img.src = `https://minecraft.wiki/images/invicon_${itemName.replace(/_/g,'-').replace(/\b./g, m => m.toUpperCase()).replace(/-/g,'_')}.png`;
-                img.onerror = () => {
-                    icon.innerHTML = getNamespaceEmoji(item.namespace);
-                    icon.classList.add('missing');
-                };
-            } else {
-                icon.innerHTML = getNamespaceEmoji(item.namespace);
-                icon.classList.add('missing');
-            }
+            icon.innerHTML = getNamespaceEmoji(item.namespace);
+            icon.classList.add('missing');
         };
         icon.appendChild(img);
     } else {
@@ -274,13 +266,14 @@ function showItemDetails(item) {
     const content = document.getElementById('detailsContent');
     
     const texture = craftableItems[item.id]?.texture;
+    const texPath = texture ? '/' + texture : guessTexPath(item.id);
     const isCraftable = !!craftableItems[item.id];
     const inStorage = item.count > 0;
     
     content.innerHTML = `
         <div class="item-details">
             <div class="detail-icon">
-                ${texture ? `<img src="/${texture}" onerror="this.src='https://minecraft.wiki/images/invicon_${(item.id||'').split(':')[1]?.replace(/_/g,'-')}.png'; this.onerror=function(){this.parentElement.innerHTML=getNamespaceEmoji('${item.namespace}');}">` : getNamespaceEmoji(item.namespace)}
+                ${texPath ? `<img src="${texPath}" style="width:100%;height:100%;image-rendering:pixelated" onerror="this.parentElement.innerHTML=getNamespaceEmoji('${item.namespace}')">` : getNamespaceEmoji(item.namespace)}
             </div>
             <div class="detail-name">${item.name}</div>
             <div class="detail-id">${item.id}</div>
@@ -473,6 +466,15 @@ function formatCount(count) {
     if (count >= 1000000) return (count / 1000000).toFixed(1) + 'M';
     if (count >= 1000) return (count / 1000).toFixed(1) + 'K';
     return count.toString();
+}
+
+// Guess texture path from item id (works for all 1668 items in our DB)
+function guessTexPath(itemId) {
+    if (!itemId) return null;
+    const ns   = itemId.split(':')[0];
+    const name = itemId.split(':')[1];
+    if (!ns || !name) return null;
+    return `/textures/${ns}__${name}.png`;
 }
 
 function getNamespaceEmoji(ns) {

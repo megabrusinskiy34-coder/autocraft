@@ -56,34 +56,43 @@ console.log(`Loaded ${Object.keys(recipesDB).length} recipes, ${Object.keys(item
 
 // ── Items ─────────────────────────────────────────────────────────────────
 app.get('/api/items', (req, res) => {
-  const search = (req.query.search || '').toLowerCase();
-  const ns     = req.query.namespace || '';
-  const items  = new Map();
+  try {
+    const search = (req.query.search || '').toLowerCase();
+    const ns     = req.query.namespace || '';
+    const items  = new Map();
 
-  // built-in recipes
-  for (const [, recipe] of Object.entries(recipesDB)) {
-    const data = recipe.data;
-    let ri = null;
-    if (data.result)      ri = typeof data.result  === 'string' ? data.result  : (data.result.item  || data.result.id);
-    else if (data.results?.[0]) { const r = data.results[0]; ri = typeof r === 'string' ? r : (r.item || r.id); }
-    if (!ri) continue;
-    if (!items.has(ri)) items.set(ri, { id: ri, name: ri.split(':')[1]?.replace(/_/g,' ') || ri,
-      namespace: ri.split(':')[0] || 'minecraft', texture: itemTextures[ri] || null, recipeTypes: [] });
-    items.get(ri).recipeTypes.push(recipe.type);
-  }
-  // custom recipes
-  for (const [, cr] of Object.entries(customRecipes)) {
-    const ri = cr.resultItem;
-    if (!items.has(ri)) items.set(ri, { id: ri, name: ri.split(':')[1]?.replace(/_/g,' ') || ri,
-      namespace: ri.split(':')[0] || 'minecraft', texture: itemTextures[ri] || null, recipeTypes: [] });
-    if (!items.get(ri).recipeTypes.includes(cr.recipeType)) items.get(ri).recipeTypes.push(cr.recipeType);
-  }
+    // built-in recipes
+    for (const [, recipe] of Object.entries(recipesDB)) {
+      try {
+        const data = recipe.data;
+        let ri = null;
+        if (data.result)      ri = typeof data.result  === 'string' ? data.result  : (data.result.item  || data.result.id);
+        else if (data.results?.[0]) { const r = data.results[0]; ri = typeof r === 'string' ? r : (r.item || r.id); }
+        if (!ri) continue;
+        if (!items.has(ri)) items.set(ri, { id: ri, name: ri.split(':')[1]?.replace(/_/g,' ') || ri,
+          namespace: ri.split(':')[0] || 'minecraft', texture: itemTextures[ri] || null, recipeTypes: [] });
+        items.get(ri).recipeTypes.push(recipe.type);
+      } catch {}
+    }
+    // custom recipes
+    for (const [, cr] of Object.entries(customRecipes)) {
+      try {
+        const ri = cr.resultItem;
+        if (!items.has(ri)) items.set(ri, { id: ri, name: ri.split(':')[1]?.replace(/_/g,' ') || ri,
+          namespace: ri.split(':')[0] || 'minecraft', texture: itemTextures[ri] || null, recipeTypes: [] });
+        if (!items.get(ri).recipeTypes.includes(cr.recipeType)) items.get(ri).recipeTypes.push(cr.recipeType);
+      } catch {}
+    }
 
-  let out = [...items.values()];
-  if (ns)     out = out.filter(i => i.namespace === ns);
-  if (search) out = out.filter(i => i.id.toLowerCase().includes(search));
-  out.sort((a,b) => a.id.localeCompare(b.id));
-  res.json({ total: out.length, items: out });
+    let out = [...items.values()];
+    if (ns)     out = out.filter(i => i.namespace === ns);
+    if (search) out = out.filter(i => i.id.toLowerCase().includes(search));
+    out.sort((a,b) => a.id.localeCompare(b.id));
+    res.json({ total: out.length, items: out });
+  } catch (error) {
+    console.error('[/api/items] ERROR:', error);
+    res.status(500).json({ error: error.message, stack: error.stack });
+  }
 });
 
 // ── Recipes ───────────────────────────────────────────────────────────────
